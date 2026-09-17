@@ -29,6 +29,8 @@ NebulaX/
 │   └── assets/
 ├── common/                      # Shared code: data loaders, local re-implementation of the four
 │                                # judge metrics, train/val split helpers, CSV writers
+├── weights/<Subsystem>/         # Training outputs (git-ignored): checkpoints, per-fold CV models,
+│                                # calibration tables, reference profiles. Same 4 subsystem names.
 ├── data/                        # Raw datasets (git-ignored). Mirror PS3/02_Datasets here:
 │   ├── Door/                    #   Train.csv, Train_Segments_Answer.csv, Test.csv
 │   ├── ACV/{Train,Test}/        #   acv_case_01..06.xlsx, Train_Labels.csv, acv_test_case.xlsx
@@ -104,8 +106,11 @@ adopting a challenger over the baseline.
    low-capacity, physically-motivated models. Add capacity only where validation residuals show a
    systematic pattern.
 5. **Interface.** `<Subsystem>/code/predict.py` exposes `predict(input_path: str | Path) ->
-   pandas.DataFrame` returning the exact output schema for that subsystem. Trained artefacts live
-   in `<Subsystem>/model/` and are loaded lazily. `app/` calls `predict` and writes the CSV.
+   pandas.DataFrame` returning the exact output schema for that subsystem. Training writes
+   everything it produces (per-fold models, checkpoints, calibration grids, reference profiles,
+   CV reports) to `weights/<Subsystem>/`; only the **final, single artefact** the app needs is
+   copied to `<Subsystem>/model/` (the folder that ships in the submission) and is loaded lazily
+   by `predict`. `app/` calls `predict` and writes the CSV.
    The same file also has an `argparse` entry point — `python predict.py --input <path> --output
    <csv>` — because the Info Kits reference a `predict.py --input/--output` CLI even though the
    top-level spec only mandates the app; the wrapper covers both readings. For Rail and SHM,

@@ -9,6 +9,10 @@ Rail Corrugation/model/*
 SHM/model/*
 !*/model/.gitkeep
 
+# Training weights / checkpoints / CV fold models (large binaries) - keep the folders, not the files
+weights/**
+!weights/**/.gitkeep
+
 # Generated submission artefacts (assembled into C151/ at packaging time, not versioned)
 predictions.zip
 demo_video.*
