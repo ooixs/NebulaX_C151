@@ -13,7 +13,7 @@ import joblib
 import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
 from sklearn.model_selection import RepeatedStratifiedKFold
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -39,6 +39,11 @@ def load_all(files: list[Path], cache: Path):
 def make_rf(seed=0):
     return RandomForestClassifier(n_estimators=500, class_weight="balanced_subsample", min_samples_leaf=1,
                                   max_features="sqrt", random_state=seed, n_jobs=-1)
+
+
+def make_detector(seed=0):
+    """Per-side detector. ExtraTrees chosen in the improvement phase (0.834 vs RF 0.819 macro-F1)."""
+    return ExtraTreesClassifier(n_estimators=800, class_weight="balanced_subsample", random_state=seed, n_jobs=-1)
 
 
 def build_tables(chan_tables, speeds, labels, tr_idx, te_idx):
@@ -103,7 +108,7 @@ def main():
             r1, r2 = side_relative_rows(F.iloc[i].to_dict())
             rows_tr += [r1, r2]; ys_tr += [int(y[i] == "Side I"), int(y[i] == "Side II")]
         Rtr = pd.DataFrame(rows_tr).fillna(-9)
-        det = RandomForestClassifier(n_estimators=500, class_weight="balanced_subsample", random_state=k, n_jobs=-1).fit(Rtr, ys_tr)
+        det = make_detector(k).fit(Rtr, ys_tr)
         for i in te:
             r1, r2 = side_relative_rows(F.iloc[i].to_dict())
             Rte = pd.DataFrame([r1, r2]).fillna(-9)[Rtr.columns]
@@ -149,7 +154,7 @@ def main():
     for i in range(n):
         r1, r2 = side_relative_rows(F.iloc[i].to_dict()); rows += [r1, r2]; ys += [int(y[i] == "Side I"), int(y[i] == "Side II")]
     R = pd.DataFrame(rows).fillna(-9)
-    det = RandomForestClassifier(n_estimators=500, class_weight="balanced_subsample", random_state=0, n_jobs=-1).fit(R, ys)
+    det = make_detector(0).fit(R, ys)
     art = dict(choice=choice, ref=ref, clf=clf, clf_cols=cols, det=det, det_cols=list(R.columns), tau=tau,
                cv_macro_f1=summary[choice if choice in summary else "baseline_argmax"][0])
     joblib.dump(art, WEIGHTS / "rail_artefact.joblib"); joblib.dump(art, MODEL / "rail_model.joblib")

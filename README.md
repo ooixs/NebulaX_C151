@@ -541,16 +541,41 @@ in the raw data: RMS ratio Side I / Side II is 1.02 (Normal), 1.13 (Side I), 0.7
 |---|---|---|
 | RF 3-class, argmax | 0.652 ± 0.015 | 0.961 / 0.235 / 0.810 |
 | RF 3-class, minority-probability scaling tuned on OOF | 0.815 ± 0.018 | — |
-| Shared per-side RF detector (544 side-rows, side-relative features), τ = 0.33 — **shipped** | **0.819 ± 0.009** | 0.972 / 0.615 / 0.851 |
+| Shared per-side RF detector (544 side-rows, side-relative features), τ = 0.33 | 0.819 ± 0.009 | 0.972 / 0.615 / 0.851 |
+| Shared per-side **ExtraTrees** detector (800 trees), τ = 0.28 — **shipped** | **0.834 ± 0.014** | 0.981 / 0.690 / 0.840 |
 
-Confusion (side detector, OOF): Normal 229/2/3, Side I 6/**8**/0, Side II 2/2/**20**. The side
-detector clears the acceptance rule against the argmax baseline (> 1 std) and is on par with the
-probability-scaled baseline while having one tuned parameter instead of two and much better Side I
-recall (8/14 vs 2/14). Side I remains the weak class — 14 training examples — and is the first
-target for the improvement phase.
+Confusion (ExtraTrees side detector, OOF): Normal 228/2/4, Side I 3/**10**/1, Side II 2/2/**20**.
+The per-side design clears the acceptance rule against the argmax baseline (> 1 std) and beats the
+probability-scaled 3-class baseline while having one tuned parameter instead of two. Side I recall
+went from 2/14 (3-class) to 10/14.
 
-**Test predictions.** `predictions/rail_predictions.csv`: 60 Normal / 2 Side I / 6 Side II
-(training prior implies ≈ 3.5 / 6 of 68). All 8 flagged files are at 11–19 m/s.
+**Improvement phase.** 13 variants on identical folds (5 × 3 repeated stratified):
+
+| # | Variant | Macro F1 |
+|---|---|---|
+| 0 | RF per-side detector (initial) | 0.819 ± 0.009 |
+| 1 | **ExtraTrees per-side detector** | **0.834 ± 0.014** |
+| 2 | LightGBM per-side | 0.794 |
+| 3 | RF on side-*relative* features only | 0.685 |
+| 4 | RF on *own-side* features only (no cross-rail) | 0.779 |
+| 5 | Logistic regression | 0.737 |
+| 6 | RF, min_samples_leaf 3, max_features 0.3 | 0.818 |
+| 7 | RF on excess-over-reference features only | 0.758 |
+| 8 | RF + LightGBM average | 0.810 |
+| 9 | ET max_features 0.3 | 0.823 |
+| 10 | ET min_samples_leaf 2 | 0.821 |
+| 11 | ET 2000 trees | 0.829 |
+| 12 | ET + RF average | 0.828 |
+| 13 | ET + side-mirroring augmentation | 0.784 |
+
+Variants 9–13 are five consecutive non-improvements on ExtraTrees → stop rule met. Two findings
+worth keeping: (a) the ablations confirm both halves of the feature design — dropping cross-rail
+features costs 5.5 points and dropping own-side features costs 15; (b) **side-mirroring
+augmentation hurts** (−5 points), so the two sides are not symmetric enough to swap and the
+Methodology's caution about it was warranted.
+
+**Test predictions.** `predictions/rail_predictions.csv`: 57 Normal / 5 Side I / 6 Side II
+(training prior implies ≈ 3.5 / 6 of 68).
 
 ### SHM
 
