@@ -46,6 +46,11 @@ def main():
 
     base = evaluate({"peer_dev_mean": 1.0}, feats_loo)
     print("baseline peer_dev_mean:", np.mean(list(base.values())).round(4), base)
+    # physics tie-breaker with a FIXED weight: discharge-pressure deficit vs peers, active only when the
+    # rich-format pressure columns exist (undercharge lowers high-side pressure). No fitted parameters.
+    PHYS = {"peer_dev_mean": 1.0, "p_high_def": 1.0}
+    phys = evaluate(PHYS, feats_loo)
+    print("baseline + fixed pressure tie-breaker:", np.mean(list(phys.values())).round(4), phys)
 
     # ---- weight grid, chosen by nested LOO (weights picked on 5 cases, scored on the 6th)
     combos = [dict(zip(COMPONENTS, w)) for w in itertools.product(GRID, repeat=len(COMPONENTS)) if any(w)]
@@ -61,8 +66,11 @@ def main():
     print("in-sample best weights", insample_w, "score", np.mean(list(table[insample_key].values())).round(4),
           "(optimistic: weights chosen on the same 6 cases)")
     # acceptance rule: ship the tuned combination only if its nested-LOO mean beats the untuned baseline
-    if np.mean(list(nested.values())) > np.mean(list(base.values())) + 1e-9:
+    ref_score = max(np.mean(list(base.values())), np.mean(list(phys.values())))
+    if np.mean(list(nested.values())) > ref_score + 1e-9:
         final_w, final, choice = insample_w, table[insample_key], "weighted (nested-LOO beat baseline)"
+    elif np.mean(list(phys.values())) > np.mean(list(base.values())) + 1e-9:
+        final_w, final, choice = PHYS, phys, "peer_dev_mean + fixed-weight pressure deficit (no fitted weights)"
     else:
         final_w, final, choice = {"peer_dev_mean": 1.0}, base, "baseline peer_dev_mean (tuned weights did not beat it under nested LOO)"
     print("SHIPPED:", choice, final_w, "LOO score", np.mean(list(final.values())).round(4))

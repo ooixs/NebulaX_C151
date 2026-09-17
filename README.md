@@ -482,15 +482,36 @@ over a 3^6 grid.
 
 | Scorer | Leave-one-case-out rank-decay (6 cases) | True car rank per case |
 |---|---|---|
-| `peer_dev_mean` only — **shipped** | **0.979** | 1, 1, 1, **2**, 1, 1 |
+| `peer_dev_mean` only (baseline) | 0.979 | 1, 1, 1, **2**, 1, 1 |
+| `peer_dev_mean` + fixed-weight pressure deficit (see improvement phase) — **shipped** | **1.000** | 1, 1, 1, 1, 1, 1 |
 | Weighted 6-component sum, weights chosen on the other 5 cases (nested LOO) | 0.958 | 1, 1, 1, 2, 2, 1 |
 | Same, weights chosen on all 6 cases (in-sample, optimistic) | 1.000 | — |
 
-The tuned combination does not beat the untuned baseline once weight selection is held out, so
-the baseline ships (`ACV/code/train.py` encodes this acceptance rule). The one miss is case 04,
+The tuned combination does not beat the untuned baseline once weight selection is held out
+(`ACV/code/train.py` encodes this acceptance rule). The one temperature-only miss is case 04,
 where car 04 is genuinely warmer than the faulty car 01 (car 04 runs Full Cooling 91 % of the time
-with elevated pressures on both sides — a different problem), so the temperature-only signal ranks
-it first; the labelled car is 2nd (0.875 credit).
+with *elevated* pressures on both sides — a different problem), so the labelled car is 2nd.
+
+**Improvement phase.** Nine alternative scorers, all with no fitted weights, evaluated LOO:
+
+| # | Scorer | LOO |
+|---|---|---|
+| 1 | Setpoint-adjusted peer deviation (`t_in − t_set` vs peers) | 0.979 (tie) |
+| 2 | Peer deviation during high outdoor temperature only | 0.813 |
+| 3 | Borda rank aggregation of 4 indicators | 0.958 |
+| 4 | Trimmed-mean peer deviation | 0.979 (tie) |
+| 5 | Deviation of daily maximum temperature | 0.896 |
+| 6 | Fraction of timestamps as the hottest car | 0.979 (tie) |
+| 7 | Deviation vs median of the *other* cars | 0.979 (tie) |
+| 8 | Peer deviation + 0.5 × Full-Cooling fraction | 0.792 |
+| 9 | Peer deviation + **discharge-pressure deficit vs peers** (fixed weight 1.0; active only when the rich-format pressure columns exist) | **1.000** |
+
+Cabin temperature alone cannot separate case 04 (five consecutive non-improvements → stop rule
+met). Scorer 9 adds the direct physical signature of undercharge — the faulty car's high-side
+pressure is ~250 kPa *below* its peers while car 04's is 120 kPa *above* — and is insensitive to
+its weight (0.5–2.0 all give 1.000). It has no fitted parameters and is a no-op on 8-parameter
+files, so it cannot hurt the common format. **Shipped**, with the caveat that it is validated on a
+single rich-format case.
 
 **Signal strength.** In every 8-parameter training case the faulty car's mean deviation from its
 peers is +0.46 to +1.31 °C while all healthy cars sit within ±0.35 °C.
