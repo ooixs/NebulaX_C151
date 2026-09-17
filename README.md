@@ -67,250 +67,331 @@ Conventions:
 
 ## Methodology
 
-Research-backed design for each subsystem. Every initial proposal was checked against the
-authoritative Info Kits and the relevant literature; where the literature pointed to a better
-approach the proposal was revised, otherwise it was kept. **Nothing below has been validated on the
-actual data yet** — each "recommended" method is a hypothesis to be tested against its baseline on
-leakage-safe splits, and the simpler method wins unless the refinement shows a convincing gain on
-the official metric.
+Implementation spec for the four models. Read the subsystem's Info Kit in `docs/references/`
+first — it is the authoritative task definition. Each subsystem section below gives: inputs and
+outputs, the modelling pipeline, what to validate and how, and the acceptance criteria for
+adopting a challenger over the baseline.
 
-### Summary of verdicts
+### Ground rules (apply to every subsystem)
 
-| Subsystem | Original proposal | Verdict | Key changes |
-|---|---|---|---|
-| Door | Timestamp-gap segmentation → per-segment current/position features → LightGBM/RF, 1D-CNN as comparison | **Keep, refine** | Phase-aware "excess current" features; MiniROCKET replaces the CNN as comparison model; change-point detection as segmentation fallback |
-| ACV | Peer-relative robust z-scores per car → weighted sum → rank | **Keep, refine** | Peer comparison conditioned on operating mode; small healthy-response residual model; persistence-based scoring |
-| Rail Corrugation | Speed → wavelength conversion, per-side aggregates, side-mirroring augmentation, per-side binary detector | **Revise** | Dual-domain (frequency + wavelength) features, normal-response reference from Normal files, cross-rail coupling features; mirroring and per-side detector demoted to challengers |
-| SHM | Rainflow + Miner's rule with fitted (m, C); log-space regression fallback | **Keep, refine** | Calibrate directly on MAPE (not log least-squares); treat rainflow residue convention and channel aggregation as calibration choices; drop the "near-1.0" expectation |
+1. **Metrics.** Implement the four judge formulas in `common/metrics.py` exactly as written in the
+   Info Kits and unit-test them against the worked examples there. Every model-selection decision
+   uses the official metric, computed end-to-end (e.g. Door is scored on the full held-out stream,
+   not on pre-cut cycles).
+2. **Splits.** Never split on random rows. Door: contiguous time blocks. ACV: leave-one-case-out.
+   Rail: repeated stratified K-fold, grouped by file. SHM: file-level K-fold. Anything fitted from
+   data (reference profiles, thresholds, weights, S-N constants, class thresholds) is refit inside
+   each training fold.
+3. **Baseline → challenger.** Build the baseline first, record its CV score, then build the
+   challenger. Adopt the challenger only if it beats the baseline on the official metric across
+   folds. Otherwise ship the baseline.
+4. **Capacity.** Data is small everywhere (6 ACV cases, 14 Side I files, 64 SHM files). Default to
+   low-capacity, physically-motivated models. Add capacity only where validation residuals show a
+   systematic pattern.
+5. **Interface.** `<Subsystem>/code/predict.py` exposes `predict(input_path: str | Path) ->
+   pandas.DataFrame` returning the exact output schema for that subsystem. Trained artefacts live
+   in `<Subsystem>/model/` and are loaded lazily. `app/` calls `predict` and writes the CSV.
+6. **Stack.** `pandas`, `numpy`, `scipy`, `scikit-learn`; `lightgbm` optional; `sktime` (for
+   MiniROCKET); `ruptures`; `rainflow`; `openpyxl`; `streamlit` for the app.
 
-### Shared principles
+---
 
-- **Metrics.** `common/` re-implements the four judge formulas exactly (IoU-weighted F1, linear
-  rank-decay, macro F1, max(0, 1 − MAPE)) and is unit-tested against the worked examples in the
-  Info Kits. All model selection uses these, end-to-end, never a proxy metric.
-- **Splits.** Never random rows. Door: contiguous time blocks of `Train.csv`. ACV: leave-one-case-out.
-  Rail: repeated stratified K-fold grouped by file (and by recording run if metadata allows). SHM:
-  file-level K-fold, grouped by line/load condition if it can be inferred. Every fitted component
-  (reference profiles, thresholds, weights, S-N constants) is refit inside each training fold.
-- **Simplicity rule.** Sample sizes are small everywhere (6 ACV cases, 14 Side I files, 64 SHM
-  files). Low-capacity, physically-motivated models are the default; capacity is added only when
-  validation residuals justify it.
+### 1. Door — segmentation + per-cycle classification
 
-### 1. Door — segment, then classify (kept, refined)
+**Input.** One CSV stream, 17 columns per row: timestamp (`Y-M-D-h-m-s-ms`, hyphen-separated, not
+zero-padded), motor current (mA), motor voltage (10 mV), back-EMF, door opening time (0.1 s),
+door closing time (0.1 s), close command, open command, DCSR, DCSL, DLSR, DLSL, door opened, door
+locked, opening, closing, door position. `Train_Segments_Answer.csv` gives `start_time`,
+`end_time`, `operation` (Open/Close), `status` (Normal / Abnormal resistance), `n_rows` per true
+cycle.
 
-**Task.** One continuous stream → find every open/close cycle → label `Normal` / `Abnormal
-resistance`. Scored on IoU-weighted F1: timing *and* label both count, over-segmentation and loose
-boundaries are penalised directly.
+**Output.** `door_predictions.csv` with columns `start_time`, `end_time`, `prediction`; one row per
+predicted cycle; timestamps in the native format or ISO.
 
-**Research.**
-- Wei et al. (2020), *Urban Rail Transit* — resistance "sub-health" diagnosis from door motor
-  signals. Splits each movement into rising-speed, uniform-speed, slow-speed and termination
-  phases and compares motor current against normal operating envelopes (μ ± 3σ / 6σ); current
-  reflects resistance directly because DC motor torque ∝ current.
-  <https://link.springer.com/article/10.1007/s40864-020-00133-4>
-- Shimizu, Perinpanayagam & Namoano (2022), *IEEE Aerospace Conf.* — real-world railway door data
-  with start–stop discontinuities; the working pipeline is segmentation → feature extraction →
-  dimensionality reduction → normal/abnormal separation. <https://doi.org/10.1109/aero53065.2022.9843627>
-- Dempster, Schmidt & Webb (2021), *KDD* — MiniROCKET: near-deterministic random convolutional
-  kernel transform + ridge classifier; state-of-the-art accuracy at very low cost, recommended for
-  small datasets. <https://arxiv.org/abs/2012.08791>
-- Truong, Oudre & Vayatis (2020), *Signal Processing* — offline change-point detection review;
-  implemented in the `ruptures` library. <https://github.com/deepcharles/ruptures/>
+**Metric.** IoU-weighted F1: predicted segments match true segments one-to-one (same label, IoU > 0,
+greedy by IoU); credit per match = IoU; soft precision/recall → harmonic mean.
 
-**Implications.** The two-stage architecture matches how practitioners handle this data. The
-literature's strongest signal is *phase-specific* excess current, not whole-cycle peak/RMS. A
-trained CNN is unjustified at this data size when MiniROCKET gives a strong sequence-model
-comparison for free.
+#### 1.1 Parsing
 
-**Recommended method.**
-1. *Segmentation candidates, evaluated label-agnostically against `Train_Segments_Answer.csv`
-   (IoU-F1 with labels ignored; target ≈ 1.0):*
-   - A — timestamp gaps between rows (hypothesis: the controller only logs while the door is
-     active). Verify; do not assume.
-   - B — small state machine over motion evidence: position derivative, current activity,
-     open/close commands, DCSR/DCSL/DLSR/DLSL transitions.
-   - C — `ruptures` PELT change-point detection on [current, position] as a fallback.
-   Do not over-trim boundaries: startup and locking activity may lie inside the labelled segment.
-2. *Features per segment.* Build a normal-only reference current profile per operation (Open /
-   Close) — and per door if `Car Number` / `Door Number` vary and are usable — by resampling
-   current against normalised position (or time) into ~20 bins. Then: excess over reference
-   (max, integral, location, persistence), stall / slow-travel indicators, electrical energy,
-   back-EMF vs position, duration columns, plus conventional stats. Keep absolute current and raw
-   duration; do not amplitude-normalise cycles (that would erase the fault signature).
-3. *Classifiers to compare.* Random Forest / shallow gradient boosting on features vs MiniROCKET +
-   `RidgeClassifierCV` on aligned current/position profiles. Class weights; decision threshold
-   tuned on the end-to-end metric.
+- Parse the timestamp into a `datetime64[ms]` column; keep the original string for output.
+- Sort by time; assert monotonicity. Record the distribution of Δt between consecutive rows.
 
-**Validation.** Hold out contiguous time blocks (and door groups if identifiers exist). Select the
-pipeline on end-to-end IoU-F1 on the held-out stream, not on classification accuracy of pre-cut
-cycles.
+#### 1.2 Segmentation
 
-**Open assumptions.** Gap-based logging; usability of door identifiers; label balance in Train.
+Build a **segmentation harness** first: given predicted `(start, end)` pairs and the answer file,
+compute IoU-F1 with labels ignored. Target ≈ 1.0 before touching classification.
 
-### 2. ACV — peer-relative ranking, conditioned on operating state (kept, refined)
+Implement three segmenters and pick by harness score:
 
-**Task.** 6 labelled train cases + 1 test case, 8 cars each, exactly one faulty car per case.
-Output: all cars ranked most → least likely faulty. Scored on linear rank-decay (rank 2 still
-earns 0.875).
+- **A — timestamp gaps.** Cut wherever Δt exceeds a threshold (scan thresholds; the Δt histogram
+  should be bimodal if the controller only logs during activity). Cheapest; try first.
+- **B — motion state machine.** A cycle is active while any of: |Δposition| > ε, current above
+  its idle level, open/close command asserted, DCS*/DLS* switches transitioning. Start = first
+  active row, end = last active row before ≥ N idle rows. Tune ε, idle level, N on the harness.
+- **C — change-point detection.** `ruptures` PELT (`model="rbf"` or `"l2"`) on `[current,
+  position]`, penalty tuned on the harness. Fallback if A and B are unreliable.
 
-**Research.**
-- Du, Domanski & Payne (2015), *Applied Thermal Engineering* (NIST) — fault effects, including
-  refrigerant undercharge, differ by system configuration and operating condition; FDD works by
-  comparing measured features with expected *fault-free* values under the same conditions.
-  <https://www.nist.gov/publications/effect-common-faults-performance-different-vapor-compression-systems>
-- Mattera et al. (2018), *Sensors* — virtual sensors: predict one measurement from related ones
-  with a simple model, detect faults via the residual. <https://www.mdpi.com/1424-8220/18/11/3931>
-- Takeuchi & Saito (2019), *arXiv* — scaling-law refrigerant-leak soft sensor, configuration-
-  independent, but requires *refrigerant pipe* temperature, which our schema does not have. Only
-  its operating-mode conditioning transfers. <https://arxiv.org/html/1902.09427>
+Boundary rule: do **not** trim start-up or locking activity aggressively — check on the answer file
+whether the labelled segments include them, and match that convention exactly. Sloppy boundaries
+lose IoU on every match.
 
-**Implications.** Peer comparison is the right frame (the other 7 cars are contemporaneous
-fault-free references), but it must compare like with like: cars in different running modes,
-setpoints or startup phases are not comparable. Rank by *unexplained cooling underperformance*,
-not by "hottest car".
+Record `operation` (Open vs Close) per predicted segment using the sign of the net position change
+or the command flags — needed for per-operation references below, not for output.
 
-**Recommended method.**
-1. *Loading.* Parse `Car <NN> - <parameter>` headers dynamically, map parameters by keyword
-   (temperature / mode / status), use the intersection available in the file, emit car IDs exactly
-   as they appear.
-2. *Condition-matched peer features.* At each timestamp compare a car only with peers in the same
-   running/setting mode; robust z-score against the peer median. Features: setpoint error (indoor
-   temp − cooling control temp, mean and p95 while cooling), cooling-mode duty fraction, deviation
-   from peer-median indoor temp, cooldown rate after mode entry.
-3. *Healthy-response residual model.* Ridge regression fitted on the healthy cars of the training
-   cases predicting indoor temperature change from indoor temp, outdoor temp, target temp, running
-   mode, load-halved status and time since mode entry. Residual = observed cooling weaker than
-   expected; aggregate per car.
-4. *Scoring.* Small weighted sum of 3–5 interpretable components (persistent excess temperature,
-   weak cooldown response, sustained cooling demand without response). Weights chosen by
-   leave-one-case-out with minimal search; a brief spike counts less than persistent
-   underperformance. Information-valid flags mask bad data; they are not fault evidence.
+#### 1.3 Features per segment
 
-**Validation.** Leave-one-case-out over the 6 cases; report the true car's rank in every case and
-the mean rank-decay score. Fit reference models and weights without the held-out case.
+Compute from Normal training cycles only a **reference current profile** per operation (and per
+door if `Car Number` / `Door Number` take multiple values in Train): resample current onto ~20
+bins of normalised position (fallback: normalised time), take median and IQR per bin.
 
-**Open assumptions.** Single fault per file; all cars share ambient conditions; the 60+-parameter
-file is handled via the parameter intersection.
+Per-segment feature vector:
 
-### 3. Rail Corrugation — dual-domain, reference-corrected, side-relative features (revised)
+| Group | Features |
+|---|---|
+| Excess over reference | per-bin `(current − median) / IQR`; max, mean, integral of positive excess; bin index of max excess; longest run of bins above +2 IQR |
+| Current stats | peak, mean, RMS, std, integral (charge), time above 50 / 75 / 90 % of peak |
+| Motion | duration (rows and seconds), `door opening time` / `door closing time` columns, mean and min |velocity|, stall indicators (rows with |Δposition| ≈ 0 while current high), number of direction reversals |
+| Electrical | mean voltage, mean back-EMF, electrical energy (Σ V·I·Δt), current-vs-back-EMF slope |
+| Context | operation (Open/Close), door identifier if present |
 
-**Task.** 272 one-second files at 10 kHz, 129 columns (speed pulse + 64 vibration/shock pairs);
-234 Normal / 14 Side I / 24 Side II. Scored on macro F1, so the two rare classes carry two-thirds
-of the score.
+Keep absolute current values and raw durations; do not amplitude-normalise a cycle to itself.
 
-**Research.**
-- Baasch et al. (2025), *TRA / Lecture Notes in Mobility* — STFT → log-spectral averaging to
-  remove the wheel–rail system response → distance–wavenumber domain via speed (x = v·t,
-  k = f/v); features extracted from wavenumber spectra.
-  <https://link.springer.com/chapter/10.1007/978-3-031-85578-8_42>
-- De Rosa et al. (2024), *Applied Sciences* — excitations split into frequency-constant (vehicle /
-  track modes), wavelength-constant (rail / wheel defects) and broadband impulsive (welds,
-  switches). Same-side axle boxes share peaks under corrugation; left and right differ, especially
-  in curves. <https://www.mdpi.com/2076-3417/14/19/8920>
-- Hassanieh et al. (2023), *Int. J. Rail Transportation* — Random Forest on ABA features to predict
-  corrugation level; engineers features that *nullify vibration inherited from the other rail*
-  through left–right dynamic coupling. <https://doi.org/10.1080/23248378.2023.2220112>
-- Li et al. (2025), *Measurement* (TU Delft) — short-pitch corrugation detection under varying
-  speed from time–frequency ABA features; likelihood from the number of signals detecting it and
-  severity from impact energy. <https://doi.org/10.1016/j.measurement.2025.118064>
+#### 1.4 Classifiers
 
-**Implications for the original proposal.** (i) Converting frequency to wavelength does not remove
-speed-dependent amplitude changes or vehicle/track resonances — a reference for *normal* response
-is needed. (ii) Cross-rail coupling means Side II sensors pick up Side I corrugation, so
-side-relative features are essential for localisation. (iii) Side-mirroring augmentation is only
-valid if sensor/operating symmetry holds; it does not create independent fault examples.
+- **Baseline.** `RandomForestClassifier(class_weight="balanced")` or shallow LightGBM on the
+  feature table. Tune the decision threshold on the end-to-end metric, not on accuracy.
+- **Challenger.** MiniROCKET (`sktime.transformations.panel.rocket.MiniRocketMultivariate`) on the
+  resampled `[current, position, back-EMF]` profiles (fixed length, e.g. 128 samples) →
+  `RidgeClassifierCV`. Compare on the same folds.
 
-**Recommended method.**
-1. *Speed decode.* Verify the pulse convention (edges per tooth) on real files before computing
-   v = transitions / (edges_per_tooth × 90) × π × 0.85 m / Δt; a factor-of-two error shifts every
-   inferred wavelength. Use sliding-window local speed; if speed varies within the second,
-   resample to the distance domain.
-2. *Per-channel features in both domains.* Welch PSD band powers in frequency *and* in wavelength
-   (third-octave-like bands across the corrugation range), dominant wavelength and its prominence,
-   spectral entropy/flatness, RMS, kurtosis, crest factor; shock channel: peak count and
-   impulsiveness.
-3. *Normal-response reference.* From Normal training files only, per channel/position and speed
-   bin, take the median log-bandpower; add excess-over-reference features. Keep the raw spectral
-   features alongside; never normalise a test recording against itself.
-4. *Side aggregation and cross-rail features.* Side I = positions 1,3,5,7; Side II = 2,4,6,8, across
-   all 8 cars → mean, max, top-quartile, std, and count of channels exceeding the reference. Add
-   Side I − Side II excess per band, ratios, and same-side agreement (fraction of same-side
-   channels sharing the dominant wavelength). Preserve local evidence — a one-second window does
-   not guarantee every car crosses the defect.
-5. *Models.* Baseline: class-weighted 3-class Random Forest / gradient boosting. Challenger: shared
-   per-side detector trained on (file, side) rows with side-relative features, decoded to exactly
-   one of `Normal` / `Side I` / `Side II` with thresholds tuned on out-of-fold macro F1. Mirroring
-   only after symmetry is verified; augmented copies stay in the same fold as their source.
+#### 1.5 Validation
 
-**Validation.** Repeated stratified K-fold grouped by file (and run if known); report macro F1,
-per-class precision/recall and the confusion matrix.
+- Split `Train.csv` into contiguous time blocks (e.g. 5 blocks); rotate one out. If door
+  identifiers exist, also run a leave-one-door-out split.
+- Score the **full pipeline** (segment → classify) on the held-out block with `common.metrics`.
+- Report: segmentation-only IoU-F1, classification precision/recall per class on true segments, and
+  end-to-end IoU-F1. Acceptance: challenger must beat baseline on end-to-end IoU-F1 in ≥ 4/5 folds.
 
-### 4. SHM — calibrated rainflow + Miner's rule (kept, refined)
+---
 
-**Task.** 64 train / 16 test dynamic-stress files; predict cumulative fatigue damage. Scored on
-max(0, 1 − MAPE). The Info Kit states the labels were produced by rainflow counting + Miner's rule
-with an S-N curve σ^m · N = C, so this is primarily a physics-recovery problem.
+### 2. ACV — per-car anomaly ranking
 
-**Research.**
-- `rainflow` (iamlikeme) — ASTM E1049-85 implementation; `extract_cycles` yields (range, mean,
-  count = 1.0 or 0.5) for every closed and residual cycle. <https://github.com/iamlikeme/rainflow/>
-- Marsh et al. (2016), *Int. J. Fatigue* — rainflow residue processing materially changes damage;
-  conventional half-cycle treatment can be non-conservative, and for short records the largest
-  ranges often sit in the residue. <https://doi.org/10.1016/j.ijfatigue.2015.10.007>
-- de Myttenaere et al. (2016), *Neurocomputing* — the MAPE-optimal model is a weighted MAE
-  regression with weights 1/|y|; least squares in log space is *not* equivalent.
-  <https://arxiv.org/abs/1605.02541>
-- Dirlik & Benasciutti (2021), *Metals*; Slavič et al. (2023), *MSSP* (FLife package) — spectral
-  fatigue methods assume stationary Gaussian loading; useful for speed, not accuracy, here.
-  <https://www.mdpi.com/2075-4701/11/9/1333>, <https://doi.org/10.1016/j.ymssp.2023.110149>
+**Input.** One `.xlsx` per case: 3 id columns (car model, train number, time) + per-car columns
+named `Car <NN> - <parameter>`, sampled every 30 s. Most files have 8 parameters per car (setting
+mode, running mode, control temp for cooling and heating, indoor / outdoor average temp,
+load-halved status, information-valid status); one file has 60+. `Train_Labels.csv` gives the
+faulty car per training case.
 
-**Implications.** Keep rainflow + Miner's rule as the primary model. Two things change: the
-calibration objective must be MAPE itself, and the hidden conventions of the reference computation
-(residue treatment, range vs amplitude, channel aggregation, mean-stress correction) must be
-treated as discrete calibration choices rather than assumed.
+**Output.** `acv_predictions.csv` with `file_id`, `ranked_cars` — all cars in the file, most → least
+likely faulty, `|`-separated, using the two-digit id exactly as in the headers (e.g. `03`).
 
-**Recommended method.**
-1. *Inspect first.* Number of channels per file ("all monitoring points"), units, sampling rate,
-   length; whether the label is for one point, a sum or a maximum across points.
-2. *Damage model.* Unbinned rainflow per channel keeping half cycles; for cycle range rᵢ,
-   amplitude aᵢ = rᵢ / 2, count nᵢ: D̂ = (1/C) · Σ nᵢ aᵢ^m. Preserve stress magnitudes (no per-file
-   standardisation); treat file numbers as identifiers, never as chronology; never concatenate
-   files into an invented operating history.
-3. *Calibration on MAPE.* Choose m and C — plus discrete options: residue as half / full / repeated
-   cycles, range vs amplitude, per-channel sum / max / specific channel, optional Goodman
-   mean-stress correction, optional endurance cut-off — by minimising mean |D − D̂| / D on the
-   training folds (weighted-MAE objective). Log-space fitting is an initialiser only. Keep the
-   parameter count tiny; do not add material constants just because they lower training error on
-   64 files.
-4. *Residual model, only if warranted.* If systematic residuals remain after step 3, first
-   re-check units and conventions; then a small ridge/GBM on rainflow-derived features predicting a
-   MAPE-weighted log-ratio correction.
-5. *Fallback.* Gradient boosting on rainflow-derived features (Σ nᵢ aᵢ^m for several m, amplitude
-   histogram moments, RMS, peak counts, duration) with a MAPE-weighted objective, if physics
-   recovery fails outright.
+**Metric.** `(n − (r − 1)) / n` where `r` is the rank of the true faulty car.
 
-**Validation.** File-level K-fold (grouped by line/load if inferable); report the 1 − MAPE
-distribution across folds. Confirm no zero-valued labels (MAPE undefined) — if any exist, establish
-the judges' convention before choosing a workaround.
+#### 2.1 Loading
 
-**Correction.** The earlier expectation of a near-1.0 score was overconfident: the reference
-conventions and material constants are not disclosed, so that performance cannot be promised.
+- Read headers; regex `^Car (\d{2}) - (.+)$` to get `(car_id, parameter)`. Build a per-car long
+  table. Never hard-code the column list.
+- Map parameter names to canonical roles by keyword (`indoor`→`t_in`, `outdoor`→`t_out`,
+  `cooling`+`control`→`t_set_cool`, `running mode`→`mode_run`, `setting mode`→`mode_set`,
+  `load`→`load_halved`, `valid`→`info_valid`). Use only roles present in the file.
+- Rows where `info_valid` indicates invalid data are masked for that car (not treated as a fault
+  signal).
 
-### References
+#### 2.2 Condition-matched peer features
 
-- Wei S., Xu Z., Chen J., Shi X. (2020). Research on Subhealth Diagnosis Method for Resistance of Urban Rail Transit Door System. *Urban Rail Transit* 6, 218–230. <https://link.springer.com/article/10.1007/s40864-020-00133-4>
-- Shimizu M., Perinpanayagam S., Namoano B. (2022). Real-Time Techniques for Fault Detection on Railway Door Systems. *IEEE Aerospace Conference*. <https://doi.org/10.1109/aero53065.2022.9843627>
-- Dempster A., Schmidt D.F., Webb G.I. (2021). MiniRocket: A Very Fast (Almost) Deterministic Transform for Time Series Classification. *KDD 2021*. <https://arxiv.org/abs/2012.08791>
-- Truong C., Oudre L., Vayatis N. (2020). Selective review of offline change point detection methods. *Signal Processing* 167. <https://github.com/deepcharles/ruptures/>
-- Du Z., Domanski P.A., Payne W.V. (2015). Effect of Common Faults on the Performance of Different Vapor Compression Systems. *Applied Thermal Engineering* 98. <https://www.nist.gov/publications/effect-common-faults-performance-different-vapor-compression-systems>
-- Mattera C.G., Quevedo J., Escobet T., Shaker H.R., Jradi M. (2018). A Method for Fault Detection and Diagnostics in Ventilation Units Using Virtual Sensors. *Sensors* 18(11). <https://www.mdpi.com/1424-8220/18/11/3931>
-- Takeuchi S., Saito T. (2019). Fault Diagnosis Method Based on Scaling Law for On-line Refrigerant Leak Detection. *arXiv:1902.09427*. <https://arxiv.org/html/1902.09427>
-- Baasch B., Heusel J., Lähns A., Roth M., Groos J. (2025). Spectral Characterization of the Rail Surface in Urban Environments Using in-Service Vehicles. *Transport Transitions (TRA 2024)*, LNMOB. <https://link.springer.com/chapter/10.1007/978-3-031-85578-8_42>
-- De Rosa A., Luber B., Müller G., Fuchs J. (2024). Methodology to Detect Rail Corrugation from Vehicle On-Board Measurements by Isolating Effects from Other Sources of Excitation. *Applied Sciences* 14(19). <https://www.mdpi.com/2076-3417/14/19/8920>
-- Hassanieh W., Chehade A., Facchinetti A., Carman M., Bocciolone M., Somaschini C. (2023). Leveraging machine learning to predict rail corrugation level from axle-box acceleration measurements on commercial vehicles. *Int. J. Rail Transportation* 12(4). <https://doi.org/10.1080/23248378.2023.2220112>
-- Li S., Zhang P., Núñez A., Dollevoet R., Li Z. (2025). Monitoring of rail short pitch corrugation using the time-frequency features of both vertical and longitudinal axle box accelerations. *Measurement* 255. <https://doi.org/10.1016/j.measurement.2025.118064>
-- iamlikeme/rainflow — ASTM E1049-85 rainflow cycle counting in Python. <https://github.com/iamlikeme/rainflow/>
-- Marsh G. et al. (2016). Review and application of Rainflow residue processing techniques for accurate fatigue damage estimation. *Int. J. Fatigue* 82. <https://doi.org/10.1016/j.ijfatigue.2015.10.007>
-- de Myttenaere A., Golden B., Le Grand B., Rossi F. (2016). Mean Absolute Percentage Error for regression models. *Neurocomputing* 192. <https://arxiv.org/abs/1605.02541>
-- Dirlik T., Benasciutti D. (2021). Dirlik and Tovo-Benasciutti Spectral Methods in Vibration Fatigue: A Review with a Historical Perspective. *Metals* 11(9). <https://www.mdpi.com/2075-4701/11/9/1333>
-- Zorman A., Slavič J., Boltežar M. (2023). Vibration fatigue by spectral methods — A review with open-source support. *MSSP* 190. <https://doi.org/10.1016/j.ymssp.2023.110149>
+For each timestamp and car, define the **peer set** = other cars in the same `mode_run` (and
+`mode_set` if present). Compute robust z-scores against the peer median / MAD. Aggregate per car
+over the file:
+
+| Feature | Definition |
+|---|---|
+| `setpoint_err_mean`, `setpoint_err_p95` | `t_in − t_set_cool` while in cooling mode |
+| `peer_dev_mean`, `peer_dev_p95` | robust z of `t_in` vs peer median, cooling mode |
+| `cool_duty` | fraction of timestamps in cooling running mode |
+| `cooldown_rate` | slope of `t_in` over the first K samples after entering cooling mode, averaged over episodes |
+| `excess_persist` | longest run (in samples) with `peer_dev` > +2 |
+
+#### 2.3 Healthy-response residual model
+
+Fit on the **healthy cars of the training cases** (all cars except the labelled faulty one):
+
+```
+Δt_in(t→t+1) ~ Ridge(t_in, t_out, t_set_cool, mode_run one-hot, load_halved, time_since_mode_entry)
+```
+
+For every car, residual = observed Δt_in − predicted Δt_in. Positive residual in cooling mode =
+cooling weaker than expected. Aggregate `resid_mean_cool`, `resid_p90_cool` per car.
+
+#### 2.4 Scoring and ranking
+
+Score per car = weighted sum of standardised components:
+`setpoint_err_p95`, `peer_dev_p95`, `excess_persist`, `resid_p90_cool`, `−cooldown_rate`.
+Start with equal weights. Sort descending → `ranked_cars`.
+
+Weight tuning: grid over a small simplex (e.g. weights ∈ {0, 0.5, 1}) evaluated by
+leave-one-case-out mean rank-decay. Keep the number of components ≤ 5.
+
+#### 2.5 Validation
+
+- Leave-one-case-out over the 6 training cases: fit the residual model and choose weights on 5,
+  rank the 6th.
+- Report the true car's rank in each case and the mean rank-decay score. Acceptance: mean score
+  from condition-matched + residual features ≥ that of plain peer z-scores; otherwise ship the
+  plain version.
+- Sanity-check on the 60+-parameter file that the role mapping still yields the core roles.
+
+---
+
+### 3. Rail Corrugation — spectral features, side-relative, 3-class
+
+**Input.** CSV, 10 000 rows (1 s at 10 kHz), 129 columns. Column 1: speed pulse (90-tooth wheel,
+0/1 toggling, wheel diameter 0.85 m). Columns 2–129: `Car c, Position p` vibration then shock for
+c = 1..8, p = 1..8, i.e. column index `1 + 2·(8·(c−1) + (p−1)) + {0: vib, 1: shock}`. Positions
+1,3,5,7 = Side I; 2,4,6,8 = Side II. Labels in `Train_Labels.csv` (`filename`, `label`):
+234 Normal / 14 Side I / 24 Side II.
+
+**Output.** `rail_predictions.csv` with `file_id`, `prediction` ∈ {`Normal`, `Side I`, `Side II`}.
+
+**Metric.** Macro F1 over the three classes.
+
+#### 3.1 Speed decode
+
+- Count transitions in column 1. Verify on a few files whether one tooth produces one or two
+  transitions (plot the pulse train). Speed
+  `v = transitions / (edges_per_tooth × 90) × π × 0.85 / Δt` [m/s].
+- Compute both a file-level mean speed and a sliding-window local speed (e.g. 0.1 s windows). If
+  local speed varies by more than ~5 % within the file, resample the acceleration channels to the
+  distance domain (`x = ∫v dt`) before spectral analysis.
+
+#### 3.2 Per-channel features (64 vibration + 64 shock channels)
+
+Vibration channels:
+
+| Domain | Features |
+|---|---|
+| Frequency | Welch PSD (nperseg 1024) → log band power in fixed bands (e.g. 20–50, 50–100, 100–200, 200–400, 400–800, 800–1600 Hz); spectral centroid; spectral flatness / entropy |
+| Wavelength | map frequency to wavelength `λ = v / f`; log band power in third-octave-like λ bands across ~20–500 mm; dominant λ and its peak prominence |
+| Time | RMS, kurtosis, crest factor, peak-to-peak |
+
+Shock channels: RMS, peak count above k·σ, kurtosis, max.
+
+#### 3.3 Normal-response reference
+
+From **Normal training files only** (inside each fold): for every channel and speed bin (e.g.
+5 km/h bins), compute the median and IQR of each log band power. Add **excess features** =
+`(value − median) / IQR` for every band. Keep the raw features too.
+
+#### 3.4 Side aggregation and cross-rail features
+
+For each side (Side I = positions 1,3,5,7 across 8 cars = 32 vibration + 32 shock channels):
+mean, max, 75th percentile, std, and count of channels with excess > 2, for every feature. Then:
+
+- `side_diff_<band>` = Side I aggregate − Side II aggregate; `side_ratio_<band>` likewise.
+- `same_side_agreement` = fraction of same-side channels whose dominant λ falls within ±10 % of the
+  side's modal dominant λ.
+- Per-car max excess (to keep local evidence — not every car need cross the defect within 1 s).
+
+#### 3.5 Models
+
+- **Baseline.** `RandomForestClassifier(class_weight="balanced", n_estimators=500)` or LightGBM
+  with class weights on the file-level feature table. Tune per-class decision thresholds on
+  out-of-fold probabilities to maximise macro F1.
+- **Challenger.** Shared per-side detector: build one row per (file, side) with side-relative
+  features (own side minus other side), label = 1 if that side is corrugated. Train one binary
+  model on 544 rows. Decode per file: if both side scores < τ → `Normal`; else the higher-scoring
+  side. Tune τ on out-of-fold macro F1.
+- Optional augmentation for the challenger only: swap Side I ↔ Side II channels to double the
+  rare classes, **after** verifying on Normal files that the two sides' feature distributions are
+  statistically indistinguishable. Augmented copies stay in the same fold as their source file.
+
+#### 3.6 Validation
+
+- `RepeatedStratifiedKFold(n_splits=5, n_repeats=3)` on files. Reference statistics (3.3) and
+  thresholds are computed inside each training fold.
+- Report macro F1 (mean ± std), per-class precision / recall, confusion matrix. Acceptance:
+  challenger must improve mean macro F1 by more than one std of the baseline.
+
+---
+
+### 4. SHM — rainflow counting + calibrated Miner's rule
+
+**Input.** One CSV per equal-length time segment of dynamic stress from a measurement point;
+possibly several channels ("all monitoring points"). `Train_Labels.csv` gives `filename`,
+`damage`. File numbers are random identifiers, not chronology.
+
+**Output.** `shm_predictions.csv` with `file_id`, `prediction` (a single positive number).
+
+**Metric.** `max(0, 1 − MAPE)`, `MAPE = mean(|true − pred| / |true|)`.
+
+#### 4.1 Inspect first
+
+Before modelling, record for the training set: number of columns per file, column names/units,
+row count (sampling rate × duration), value ranges, and whether the label plausibly corresponds to
+one channel, the sum over channels, or the max. Check `Train_Labels.csv` for zero or negative
+values (MAPE is undefined at zero).
+
+#### 4.2 Damage model
+
+For each file and channel, run rainflow (`rainflow.extract_cycles`, ASTM E1049-85; yields
+`range, mean, count∈{0.5, 1.0}`). With amplitude `a_i = range_i / 2`:
+
+```
+S_m(file) = Σ_i count_i · a_i^m
+D̂(file)   = S_m / C
+```
+
+Never standardise stress per file; never concatenate files.
+
+#### 4.3 Calibration (minimise MAPE directly)
+
+Parameters: `m` (grid 2–10, step 0.25), `C` (closed form given `m`: the MAPE-optimal scalar is the
+weighted median of `S_m / D` with weights `1/D`), plus these **discrete conventions**, each a
+switch evaluated in the grid:
+
+| Switch | Options |
+|---|---|
+| Residue treatment | half cycles (ASTM default) / count residue as full cycles / repeat-and-recount |
+| Cycle magnitude | amplitude (`range/2`) / range |
+| Channel aggregation | sum over channels / max channel / each single channel |
+| Mean-stress correction | none / Goodman (`a_eq = a / (1 − mean/σ_u)` with σ_u fitted) |
+| Endurance cut-off | none / ignore cycles with `a < a_0` (a_0 fitted) |
+
+Objective for every candidate: `mean(|D − D̂| / D)` on the training fold. Use log-space least
+squares only to initialise `m`. Select the simplest configuration within one std of the best.
+
+#### 4.4 Residual model (only if 4.3 leaves systematic error)
+
+If out-of-fold residuals correlate with an observable (e.g. RMS, file duration, channel), fit a
+small `Ridge` or shallow GBM predicting `log(D / D̂)` from rainflow-derived features
+(`S_m` for m ∈ {3, 4, 5}, amplitude-histogram moments, RMS, peak count), with sample weights
+`1/D`. Apply as a multiplicative correction.
+
+#### 4.5 Fallback
+
+If no physics configuration reaches a usable CV score, train LightGBM on the same rainflow-derived
+features with `objective="regression_l1"` and sample weights `1/D`, target `D`.
+
+#### 4.6 Validation
+
+- `KFold(n_splits=8)` on files (repeat with 3 seeds). If a line / load-condition (AW0 / AW4) label
+  can be inferred from the data, add a `GroupKFold` on it to check generalisation across
+  conditions.
+- Report `1 − MAPE` per fold and the per-file relative-error distribution. Acceptance for the
+  residual model: it must reduce out-of-fold MAPE in every fold.
+
+---
+
+### References (implementation pointers)
+
+- Wei S. et al. (2020). Subhealth diagnosis of door resistance from motor current — phase-wise
+  envelope features. *Urban Rail Transit* 6. <https://link.springer.com/article/10.1007/s40864-020-00133-4>
+- Dempster A. et al. (2021). MiniRocket. *KDD*. <https://arxiv.org/abs/2012.08791>
+- Truong C. et al. (2020). Offline change-point detection (`ruptures`). <https://github.com/deepcharles/ruptures/>
+- Du Z., Domanski P.A., Payne W.V. (2015). Fault effects vs operating conditions in vapour-compression systems. *Appl. Therm. Eng.* 98. <https://www.nist.gov/publications/effect-common-faults-performance-different-vapor-compression-systems>
+- Mattera C.G. et al. (2018). Virtual-sensor residuals for HVAC fault detection. *Sensors* 18(11). <https://www.mdpi.com/1424-8220/18/11/3931>
+- Baasch B. et al. (2025). ABA → distance–wavenumber domain with system-response removal. *TRA 2024*. <https://link.springer.com/chapter/10.1007/978-3-031-85578-8_42>
+- De Rosa A. et al. (2024). Separating corrugation from other ABA excitations. *Appl. Sci.* 14(19). <https://www.mdpi.com/2076-3417/14/19/8920>
+- Hassanieh W. et al. (2023). RF on ABA features; nullifying cross-rail coupled vibration. *Int. J. Rail Transp.* 12(4). <https://doi.org/10.1080/23248378.2023.2220112>
+- iamlikeme/rainflow — ASTM E1049-85 rainflow counting. <https://github.com/iamlikeme/rainflow/>
+- Marsh G. et al. (2016). Rainflow residue processing and its effect on damage. *Int. J. Fatigue* 82. <https://doi.org/10.1016/j.ijfatigue.2015.10.007>
+- de Myttenaere A. et al. (2016). MAPE-optimal regression = weighted MAE with weights 1/|y|. *Neurocomputing* 192. <https://arxiv.org/abs/1605.02541>
