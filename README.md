@@ -598,9 +598,28 @@ dropped cycles, endurance cut-off ∈ {0, 0.5, 1, 2}, Goodman mean-stress correc
 **Shipped configuration.** `m = 5.0`, half-cycle residue (ASTM default), no cut-off, no
 mean-stress correction, `C = 7.386 × 10⁸`. All 24 CV folds independently selected this exact
 configuration. The MAPE curve is sharply peaked: m = 4.9 or 5.1 already costs 1.5–1.7 points,
-m = 4.5 costs 10.6. log(S₅) vs log(D) has correlation 0.9994. Worst single-file relative error is
-14.1 %; the remaining 2.6 % average error is the target of the improvement phase (residue
-convention variants, bilinear S-N curve).
+m = 4.5 costs 10.6. log(S₅) vs log(D) has correlation 0.9994 and slope 0.9965 (≈ 1, i.e. the
+label really is `S₅ / C`). Worst single-file relative error is 14.1 %.
+
+**Improvement phase.** Residual diagnosis: the true/predicted ratio spans 0.95–1.16; it is
+uncorrelated with damage level, cycle count or max range and only weakly with series skewness
+(ρ = −0.54). Seven refinements under the same 8-fold × 3-seed CV:
+
+| # | Variant | CV 1 − MAPE |
+|---|---|---|
+| 0 | m = 5, ASTM half-cycle residue (baseline) | 0.9736 |
+| 1 | m chosen per fold on a 0.01 grid (4.90–5.10) | 0.9744 |
+| 2 | Bilinear S-N (m₁ = 5 above knee, m₂ ∈ {3, 7, 9}, knee ∈ {1, 2, 4, 8}) | 0.9747 |
+| 3 | Goodman / Gerber mean-stress correction, σ_u ∈ 60–800 | 0.9735 |
+| 4 | Largest residue half-cycle counted as a full cycle | 0.9680 |
+| 5 | Ridge residual correction on 7 rainflow features (weights 1/D) | 0.9696 |
+| 6 | m on a 0.05 grid (4.5–5.5) per fold | 0.9723 |
+| 7 | Power-law calibration D = a·S^b, MAPE-fitted | 0.9747 |
+
+Best gain is +0.0011 for two extra parameters — not significant on 64 files (stop rule met after
+seven consecutive non-significant results). The one-parameter m = 5 model is kept; the residual
+~2.5 % is most likely a difference in the reference implementation's cycle-counting details that
+is not recoverable from the disclosed information.
 
 **Test predictions.** `predictions/shm_predictions.csv`: 16 values in 0.029–0.818 (training label
 range 0.029–0.928).
