@@ -17,8 +17,8 @@ from sklearn.ensemble import RandomForestClassifier
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from common.metrics import door_iou_f1  # noqa: E402
-from Door.code.pipeline import (ReferenceProfiles, features_table, load_stream, match_labels,  # noqa: E402
-                                segment, segments_to_frame)
+from Door.code.pipeline import (ReferenceProfiles, RfLrEnsemble, features_table, load_stream,  # noqa: E402
+                                match_labels, segment, segments_to_frame)
 
 DATA = ROOT / "data/Door"
 WEIGHTS = ROOT / "weights/Door"
@@ -27,6 +27,8 @@ POS = "Abnormal resistance"
 
 
 def make_model(kind: str, seed: int = 0):
+    if kind == "ens":
+        return RfLrEnsemble(seed)
     if kind == "rf":
         return RandomForestClassifier(n_estimators=500, class_weight="balanced", min_samples_leaf=2,
                                       random_state=seed, n_jobs=-1)
@@ -52,14 +54,15 @@ def run_cv(segs, labels, blocks: int, kind: str, thresholds=np.linspace(0.2, 0.8
         clf = make_model(kind).fit(Xtr, ytr)
         oof[te] = clf.predict_proba(Xte)[:, 1]
         fold_reports.append(dict(fold=k, n_test=int(te.sum()), n_pos_test=int(sum(y == POS for y, m in zip(labels, te) if m))))
-    # pick threshold on OOF end-to-end IoU-F1
+    # pick threshold on OOF end-to-end IoU-F1; among equally good thresholds take the centre of the interval
     truth = segments_to_frame(segs).assign(status=labels)
-    best = None
+    scores = []
     for th in thresholds:
         pred = segments_to_frame(segs, [POS if p >= th else "Normal" for p in oof])
-        sc = door_iou_f1(truth, pred)["score"]
-        if best is None or sc > best[1]:
-            best = (float(th), sc)
+        scores.append(door_iou_f1(truth, pred)["score"])
+    scores = np.array(scores)
+    top = thresholds[scores >= scores.max() - 1e-9]
+    best = (float(np.median(top)), float(scores.max()))
     # per-fold end-to-end score at the chosen threshold
     for r in fold_reports:
         m = fold_id == r["fold"]
@@ -76,7 +79,8 @@ def run_cv(segs, labels, blocks: int, kind: str, thresholds=np.linspace(0.2, 0.8
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--blocks", type=int, default=5)
-    ap.add_argument("--model", default="rf", choices=["rf", "lgbm"])
+    ap.add_argument("--model", default="ens", choices=["rf", "lgbm", "ens"])
+    ap.add_argument("--ship", action="store_true", help="also copy this model to Door/model/door_model.joblib")
     args = ap.parse_args()
     WEIGHTS.mkdir(parents=True, exist_ok=True); MODEL.mkdir(parents=True, exist_ok=True)
 
@@ -88,9 +92,11 @@ def main():
     seg_score = door_iou_f1(answer.rename(columns={}), segments_to_frame(segs, ["x"] * len(segs)), ignore_labels=True)
     print(f"segmentation-only IoU-F1 = {seg_score['score']:.4f}  ({len(segs)} segments)")
 
-    rep = run_cv(segs, labels, args.blocks, args.model)
+    rep = run_cv(segs, labels, args.blocks, args.model, thresholds=np.linspace(0.05, 0.95, 91))
+    oof = np.array(rep["oof"]); yb = np.array([l == POS for l in labels])
     print(f"[{args.model}] OOF end-to-end IoU-F1 = {rep['oof_iou_f1']:.4f} @ thr={rep['threshold']:.3f}  "
-          f"TP={rep['oof_tp']} FP={rep['oof_fp']} FN={rep['oof_fn']}")
+          f"TP={rep['oof_tp']} FP={rep['oof_fp']} FN={rep['oof_fn']}  "
+          f"OOF margin: normal max={oof[~yb].max():.3f} abnormal min={oof[yb].min():.3f}")
     for f in rep["folds"]:
         print(f"  fold {f['fold']}: n={f['n_test']} pos={f['n_pos_test']} iou_f1={f['iou_f1']:.4f}")
     rep["segmentation_iou_f1"] = seg_score["score"]
@@ -103,8 +109,10 @@ def main():
     artefact = dict(kind=args.model, clf=clf, ref=ref, threshold=rep["threshold"], feature_names=list(X.columns),
                     cv_iou_f1=rep["oof_iou_f1"])
     joblib.dump(artefact, WEIGHTS / f"door_{args.model}.joblib")
-    joblib.dump(artefact, MODEL / "door_model.joblib")
-    print("saved", MODEL / "door_model.joblib")
+    print("saved", WEIGHTS / f"door_{args.model}.joblib")
+    if args.ship:
+        joblib.dump(artefact, MODEL / "door_model.joblib")
+        print("SHIPPED ->", MODEL / "door_model.joblib")
 
 
 if __name__ == "__main__":

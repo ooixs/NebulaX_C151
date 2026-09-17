@@ -11,6 +11,10 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from common.metrics import parse_door_time, format_door_time  # noqa: E402
+from sklearn.ensemble import RandomForestClassifier  # noqa: E402
+from sklearn.linear_model import LogisticRegression  # noqa: E402
+from sklearn.pipeline import make_pipeline  # noqa: E402
+from sklearn.preprocessing import StandardScaler  # noqa: E402
 
 # Column positions per the Info Kit (names in the CSV differ slightly from the doc -> map by position)
 COLS = ["dt", "current", "voltage", "bemf", "t_open", "t_close", "cmd_close", "cmd_open",
@@ -144,3 +148,25 @@ def match_labels(segs: list[pd.DataFrame], answer: pd.DataFrame) -> list[str]:
     ans["s"] = ans["start_time"].map(parse_door_time)
     lookup = dict(zip(ans["s"], ans["status"]))
     return [lookup.get(s["t"].iloc[0], None) for s in segs]
+
+
+class RfLrEnsemble:
+    """Mean of RF probability on all features and logistic-regression probability on 4 physical features."""
+
+    LR_FEATURES = ["mid_mean", "trav_mean", "exc_mid_mean", "op_is_open"]
+
+    def __init__(self, seed: int = 0):
+        self.rf = RandomForestClassifier(n_estimators=500, class_weight="balanced", min_samples_leaf=2,
+                                         random_state=seed, n_jobs=-1)
+        self.lr = make_pipeline(StandardScaler(), LogisticRegression(C=1.0, class_weight="balanced"))
+
+    def fit(self, X, y):
+        self.rf.fit(X, y); self.lr.fit(X[self.LR_FEATURES], y); return self
+
+    def predict_proba(self, X):
+        p = 0.5 * (self.rf.predict_proba(X)[:, 1] + self.lr.predict_proba(X[self.LR_FEATURES])[:, 1])
+        return np.stack([1 - p, p], axis=1)
+
+    @property
+    def feature_importances_(self):
+        return self.rf.feature_importances_

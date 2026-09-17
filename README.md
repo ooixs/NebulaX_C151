@@ -428,19 +428,42 @@ uniform-speed-phase ("mid-travel", 30–80 % of the cycle) current, and excess-o
 z-scores against per-operation Normal profiles fitted inside each fold. Threshold chosen on
 out-of-fold end-to-end IoU-F1.
 
-| Model | CV (5 contiguous time blocks) | OOF end-to-end IoU-F1 | OOF TP / FP / FN | Threshold |
+| Model | CV (5 contiguous time blocks) | OOF end-to-end IoU-F1 | OOF margin (normal max / abnormal min) | Threshold |
 |---|---|---|---|---|
-| RandomForest (500 trees, balanced) — **shipped** | per-fold 1.000 × 5 | **1.000** | 30 / 0 / 0 | 0.20 |
-| LightGBM (300 × 7 leaves, balanced) | per-fold 1.000 × 5 | 1.000 | 30 / 0 / 0 | 0.20 |
+| RandomForest (500 trees, balanced) | per-fold 1.000 × 5 | 1.000 | 0.09 / 0.75 | 0.43 |
+| LightGBM (300 × 7 leaves, balanced) | per-fold 1.000 × 5 | 1.000 | 0.00 / 1.00 | 0.50 |
+| RF + logistic-regression ensemble — **shipped** | per-fold 1.000 × 5 | **1.000** | 0.10 / 0.55 | 0.33 |
 
-Sanity check (not leakage): OOF probability margins are wide — abnormal cycles score 0.75–1.00,
-normal cycles 0.00–0.09. The separating physics is the mid-travel current: 186–221 mA for every
-Normal cycle vs 235–717 mA for every Abnormal one (top RF features: `mid_mean`, `n_rows`,
-`cur_peak`). Peak (locking) current, cycle duration and the controller's own opening/closing-time
-columns do **not** separate the classes, so a naive "peak current threshold" would fail here.
+Threshold = centre of the zero-error OOF interval (not the lowest grid value that scores 1.0).
 
-**Test predictions.** `predictions/door_predictions.csv`: 38 rows, 26 Normal / 12 Abnormal
-resistance (Train prior: 27 % abnormal).
+Sanity check (not leakage): the separating physics is the mid-travel (uniform-speed phase)
+current: 186–195 mA (Close) / 203–221 mA (Open) for every Normal cycle vs ≥ 313 mA (Close) /
+≥ 235 mA (Open) for every Abnormal one. Peak (locking) current, cycle duration and the
+controller's own opening/closing-time columns do **not** separate the classes, so a naive "peak
+current threshold" would fail here.
+
+**Improvement phase.** CV is saturated (1.000 with wide margins), so research went into
+robustness on the *test* stream instead of the metric:
+
+1. *LightGBM vs RF* — identical CV; no change.
+2. *4-feature logistic regression* (`mid_mean`, `trav_mean`, `exc_mid_mean`, operation) — OOF
+   0.982; not better alone, but a useful second opinion.
+3. *Test-stream margin probe* — 7 test cycles sit in the gap between the training classes
+   (Open at 229–236 mA, Close at 215–220 mA) where the models disagree: LightGBM flags all 7,
+   RF@0.5 / LR / SVM flag none. Their excess-current profiles show a start-up spike in one
+   bin only (z ≈ 12–38, also present in the clearly-normal test cycles) rather than the sustained
+   z ≈ 60–175 excess across the acceleration and travel phases that every training abnormal
+   cycle has, and the test Open cycles form a continuum 213→236 mA with the next value at 335 —
+   so these are judged Normal.
+4. *RF + LR ensemble with centred threshold* — same CV, agrees with the profile evidence on the
+   contested cycles, less sensitive to any single model's extrapolation. **Shipped.**
+
+Stopped early: the metric cannot improve and the remaining uncertainty (7 borderline test
+cycles) is irreducible from the training data.
+
+**Test predictions.** `predictions/door_predictions.csv`: 38 rows, 30 Normal / 8 Abnormal
+resistance (3 Open at 335–378 mA, 5 Close at 441–542 mA). If the 7 borderline cycles are in fact
+abnormal the score would be ≈ 0.82 instead of 1.0; the reverse labelling carries the same risk.
 
 ### ACV
 
