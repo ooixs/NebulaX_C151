@@ -476,6 +476,38 @@ peers is +0.46 to +1.31 °C while all healthy cars sit within ±0.35 °C.
 every indicator (mean deviation +0.105 °C, p90 +1.0 °C, longest run above +1 °C = 36 samples =
 18 min, highest setpoint error) but the margin is smaller than in any training case.
 
+### Rail Corrugation
+
+**Speed decode.** The pulse train has symmetric high/low run lengths, so each tooth produces two
+transitions: `v = transitions / 180 · π · 0.85 m/s`. Speeds span 0–19.5 m/s. **Every fault file
+is at ≥ 9.7 m/s, while Normal files include stationary and slow runs** — speed is a strong
+confounder, which is why all excess features are computed against a Normal reference in the same
+speed bin (0–3, 3–6, 6–9, 9–12, 12–15, 15+ m/s), fitted inside each fold.
+
+**Features.** Per channel (64 vibration + 64 shock): Welch log band power in 8 frequency bands and
+7 wavelength bands (λ = v/f, 25 mm–1 m), dominant wavelength and prominence, spectral entropy and
+centroid, RMS, kurtosis, crest factor, shock RMS/kurtosis/peak count, and excess-over-reference
+z-scores. Aggregated per side (mean, max, p75, std, count of channels > +2 IQR), Side I − Side II
+differences, same-side dominant-wavelength agreement, per-car max excess. Side asymmetry is clean
+in the raw data: RMS ratio Side I / Side II is 1.02 (Normal), 1.13 (Side I), 0.78 (Side II).
+
+**Models.** 5-fold stratified CV × 3 repeats (272 files), reference + thresholds refit per fold.
+
+| Model | OOF macro F1 (mean ± std over repeats) | Per-class F1 (Normal / Side I / Side II) |
+|---|---|---|
+| RF 3-class, argmax | 0.652 ± 0.015 | 0.961 / 0.235 / 0.810 |
+| RF 3-class, minority-probability scaling tuned on OOF | 0.815 ± 0.018 | — |
+| Shared per-side RF detector (544 side-rows, side-relative features), τ = 0.33 — **shipped** | **0.819 ± 0.009** | 0.972 / 0.615 / 0.851 |
+
+Confusion (side detector, OOF): Normal 229/2/3, Side I 6/**8**/0, Side II 2/2/**20**. The side
+detector clears the acceptance rule against the argmax baseline (> 1 std) and is on par with the
+probability-scaled baseline while having one tuned parameter instead of two and much better Side I
+recall (8/14 vs 2/14). Side I remains the weak class — 14 training examples — and is the first
+target for the improvement phase.
+
+**Test predictions.** `predictions/rail_predictions.csv`: 60 Normal / 2 Side I / 6 Side II
+(training prior implies ≈ 3.5 / 6 of 68). All 8 flagged files are at 11–19 m/s.
+
 ### References (implementation pointers)
 
 - Wei S. et al. (2020). Subhealth diagnosis of door resistance from motor current — phase-wise
