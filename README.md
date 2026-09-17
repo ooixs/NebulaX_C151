@@ -410,6 +410,38 @@ features with `objective="regression_l1"` and sample weights `1/D`, target `D`.
 
 ---
 
+## Results
+
+Reproduce any row with the `train.py` in that subsystem's `code/` folder (uses `.venv`; see
+Environment). CV artefacts land in `weights/<Subsystem>/`, the shipped model in
+`<Subsystem>/model/`, and test predictions in `predictions/`.
+
+### Door
+
+**Segmentation.** Inter-row Δt within a cycle is a constant 20 ms; between cycles it is 10–59 s.
+Cutting at Δt > 1 s reproduces all 110 labelled cycles exactly — **segmentation-only IoU-F1 =
+1.000** — so the final score is entirely down to classification. Test.csv splits into 38 cycles
+(18 Open / 20 Close) the same way, with every row assigned.
+
+**Classification.** Features per cycle: basic current/voltage/back-EMF/position statistics,
+uniform-speed-phase ("mid-travel", 30–80 % of the cycle) current, and excess-over-reference
+z-scores against per-operation Normal profiles fitted inside each fold. Threshold chosen on
+out-of-fold end-to-end IoU-F1.
+
+| Model | CV (5 contiguous time blocks) | OOF end-to-end IoU-F1 | OOF TP / FP / FN | Threshold |
+|---|---|---|---|---|
+| RandomForest (500 trees, balanced) — **shipped** | per-fold 1.000 × 5 | **1.000** | 30 / 0 / 0 | 0.20 |
+| LightGBM (300 × 7 leaves, balanced) | per-fold 1.000 × 5 | 1.000 | 30 / 0 / 0 | 0.20 |
+
+Sanity check (not leakage): OOF probability margins are wide — abnormal cycles score 0.75–1.00,
+normal cycles 0.00–0.09. The separating physics is the mid-travel current: 186–221 mA for every
+Normal cycle vs 235–717 mA for every Abnormal one (top RF features: `mid_mean`, `n_rows`,
+`cur_peak`). Peak (locking) current, cycle duration and the controller's own opening/closing-time
+columns do **not** separate the classes, so a naive "peak current threshold" would fail here.
+
+**Test predictions.** `predictions/door_predictions.csv`: 38 rows, 26 Normal / 12 Abnormal
+resistance (Train prior: 27 % abnormal).
+
 ### References (implementation pointers)
 
 - Wei S. et al. (2020). Subhealth diagnosis of door resistance from motor current — phase-wise
