@@ -1,6 +1,7 @@
 # Raw datasets (copy from PS3/02_Datasets; never commit)
 data/**
 !data/**/.gitkeep
+/data
 
 # Trained model artefacts (large binaries) - keep the folders, not the files
 Door/model/*

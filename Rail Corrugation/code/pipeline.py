@@ -20,8 +20,27 @@ CLASSES = ["Normal", "Side I", "Side II"]
 
 def load_file(path: str | Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return pulse (n,), vib (n,64), shock (n,64); channel k = car k//8, position k%8 + 1."""
-    a = pd.read_csv(path).to_numpy(float)
-    assert a.shape[1] == 129, a.shape
+    path = Path(path)
+    if not path.is_file():
+        raise ValueError(f"input CSV does not exist: {path}")
+    try:
+        frame = pd.read_csv(path)
+    except pd.errors.EmptyDataError as exc:
+        raise ValueError(f"input CSV is empty: {path.name}") from exc
+    if frame.shape[0] == 0:
+        raise ValueError(f"input CSV has no data rows: {path.name}")
+    if frame.shape[1] != 129:
+        raise ValueError(f"expected 129 columns, found {frame.shape[1]} in {path.name}")
+    expected = ["Rotating speed"] + [f"{kind} of bearing in position {position} of car {car}"
+              for car in range(1, 9) for position in range(1, 9) for kind in ("Vibration", "Shock")]
+    if frame.columns.tolist() != expected:
+        raise ValueError(f"unexpected Rail header names or ordering in {path.name}")
+    try:
+        a = frame.to_numpy(float)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"nonnumeric value in {path.name}") from exc
+    if not np.isfinite(a).all():
+        raise ValueError(f"NaN or infinite value in {path.name}")
     return a[:, 0], a[:, 1::2], a[:, 2::2]
 
 
@@ -73,6 +92,7 @@ def channel_features(vib: np.ndarray, shock: np.ndarray, v: float) -> pd.DataFra
     rows["shock_peaks"] = (np.abs(shock - shock.mean(axis=0)) > 4 * sd).sum(axis=0)
     df = pd.DataFrame(rows)
     df["car"] = np.arange(64) // 8
+    df["position"] = np.arange(64) % 8 + 1
     df["side"] = [channel_side(k) for k in range(64)]
     return df
 
@@ -86,23 +106,35 @@ def speed_bin(v: float) -> int:
 
 
 class NormalReference:
-    """Per (speed bin, side) median/IQR of channel features from Normal files (fit on training fold only)."""
+    """Fold-local robust Normal reference at side, position, or channel granularity."""
 
-    def __init__(self):
-        self.ref: dict[tuple[int, int], tuple[pd.Series, pd.Series]] = {}
-        self.global_ref: dict[int, tuple[pd.Series, pd.Series]] = {}
+    def __init__(self, granularity: str = "side", smooth_speed: bool = False):
+        if granularity not in {"side", "position", "channel"}:
+            raise ValueError(f"unknown reference granularity: {granularity}")
+        self.granularity = granularity
+        self.smooth_speed = smooth_speed
+        self.ref: dict[tuple[int, tuple], tuple[pd.Series, pd.Series]] = {}
+        self.global_ref: dict[tuple, tuple[pd.Series, pd.Series]] = {}
+
+    def _groups(self, ct: pd.DataFrame):
+        if self.granularity == "side":
+            return [(s, ct.side == s) for s in (1, 2)]
+        if self.granularity == "position":
+            return [(p, ct.position == p) for p in range(1, 9)]
+        return [((c, p), (ct.car == c) & (ct.position == p))
+                for c in range(8) for p in range(1, 9)]
 
     def fit(self, chan_tables: list[pd.DataFrame], speeds: list[float], labels: list[str]) -> "NormalReference":
-        pool: dict[tuple[int, int], list] = {}
-        gpool: dict[int, list] = {1: [], 2: []}
+        pool: dict[tuple[int, tuple], list] = {}
+        gpool: dict[tuple, list] = {}
         for ct, v, y in zip(chan_tables, speeds, labels):
             if y != "Normal":
                 continue
             b = speed_bin(v)
-            for s in (1, 2):
-                sub = ct[ct.side == s][REF_FEATURES]
-                pool.setdefault((b, s), []).append(sub)
-                gpool[s].append(sub)
+            for group, mask in self._groups(ct):
+                sub = ct.loc[mask, REF_FEATURES]
+                pool.setdefault((b, group), []).append(sub)
+                gpool.setdefault(group, []).append(sub)
         for key, lst in pool.items():
             a = pd.concat(lst)
             self.ref[key] = (a.median(), a.quantile(0.75) - a.quantile(0.25) + 1e-3)
@@ -114,9 +146,13 @@ class NormalReference:
     def excess(self, ct: pd.DataFrame, v: float) -> pd.DataFrame:
         b = speed_bin(v)
         out = ct.copy()
-        for s in (1, 2):
-            med, iqr = self.ref.get((b, s), self.global_ref[s])
-            m = out.side == s
+        for group, m in self._groups(out):
+            if self.smooth_speed:
+                available = [(abs(speed_bin_value - b), value) for (speed_bin_value, key), value in self.ref.items()
+                             if key == group]
+                med, iqr = min(available, key=lambda item: item[0])[1] if available else self.global_ref[group]
+            else:
+                med, iqr = self.ref.get((b, group), self.global_ref[group])
             for c in REF_FEATURES:
                 out.loc[m, f"ex_{c}"] = (out.loc[m, c] - med[c]) / iqr[c]
         return out
@@ -128,7 +164,7 @@ AGG_FEATURES = None  # filled lazily
 def aggregate(ct: pd.DataFrame, v: float) -> dict:
     """Side-level aggregates + cross-side differences + per-car max excess."""
     feats = {"speed": v, "speed_bin": speed_bin(v)}
-    cols = [c for c in ct.columns if c not in ("car", "side")]
+    cols = [c for c in ct.columns if c not in ("car", "position", "side")]
     per_side = {}
     for s in (1, 2):
         sub = ct[ct.side == s][cols]

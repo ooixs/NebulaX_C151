@@ -18,8 +18,8 @@ from sklearn.model_selection import RepeatedStratifiedKFold
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "Rail Corrugation"))
-from code.pipeline import (CLASSES, NormalReference, aggregate, file_channel_table,  # noqa: E402
+sys.path.insert(0, str(ROOT / "Rail Corrugation/code"))
+from pipeline import (CLASSES, NormalReference, aggregate, file_channel_table,  # noqa: E402
                            side_relative_rows)
 from common.metrics import rail_macro_f1  # noqa: E402
 
