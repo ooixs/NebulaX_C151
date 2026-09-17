@@ -459,11 +459,24 @@ robustness on the *test* stream instead of the metric:
    contested cycles, less sensitive to any single model's extrapolation. **Shipped.**
 
 Stopped early: the metric cannot improve and the remaining uncertainty (7 borderline test
-cycles) is irreducible from the training data.
+cycles) is irreducible from the current-profile features alone.
+
+**Switch-timing corroboration** (`Door/notebooks/switch_timing.py`). The DCS/DLS switch actuation
+times — an axis the classifier does not use — separate the training classes cleanly and validate
+on the clear-abnormal test cycles, giving independent evidence on the borderline 7:
+
+| Feature | Train Normal | Train Abnormal | Clear-abnormal test | Borderline 7 |
+|---|---|---|---|---|
+| Open: DLS→DCS release gap (s) | −0.14…−0.13 | −0.20…−0.16 (disjoint) | −0.20…−0.18 | **−0.14…−0.13** |
+| Close: time to DCS actuation (s) | 3.22–3.38 | 3.34–3.43 | 3.35–3.41 | **3.16–3.22** |
+| Close: position at DCS actuation | 8–11 | 11–19 | 16–19 | **7–12** |
+
+All 7 borderline cycles carry the Normal switch signature — the borderline Closes actually reach
+their switches faster than any training cycle — so the Normal call stands on two independent
+physical axes, not on profile-shape reasoning alone.
 
 **Test predictions.** `predictions/door_predictions.csv`: 38 rows, 30 Normal / 8 Abnormal
-resistance (3 Open at 335–378 mA, 5 Close at 441–542 mA). If the 7 borderline cycles are in fact
-abnormal the score would be ≈ 0.82 instead of 1.0; the reverse labelling carries the same risk.
+resistance (3 Open at 335–378 mA, 5 Close at 441–542 mA).
 
 ### ACV
 

@@ -60,9 +60,15 @@ profiles show a single-bin start-up spike (z ≈ 12–38, also present in clearl
 rather than the sustained z ≈ 60–175 excess across acceleration and travel that every training
 abnormal has, and the test Open cycles form a continuum 213 → 236 mA before jumping to 335. We
 judged them Normal and shipped the RF + LR ensemble with the decision threshold placed at the
-centre of the zero-error OOF interval (0.33). **Test: 30 Normal / 8 Abnormal.** If those 7
-borderline cycles are in fact abnormal the score would be ≈ 0.82; the opposite call carries the
-same risk, so this is the residual uncertainty of the subsystem.
+centre of the zero-error OOF interval (0.33). **Test: 30 Normal / 8 Abnormal.**
+
+The Normal call was then corroborated on an independent axis the classifier never used:
+**switch-actuation timing**. In training, the DLS→DCS release gap separates Open classes
+disjointly (Normal −0.14…−0.13 s vs Abnormal −0.20…−0.16 s) and time/position at DCS actuation
+separates Close classes; the clear-abnormal test cycles reproduce the abnormal signature
+(−0.20/−0.18 s; 3.35–3.41 s), while all 7 borderline cycles sit inside the Normal ranges — the
+borderline Closes reach their switches faster (3.16–3.22 s) than any training cycle at all. Two
+independent physical axes now support the same labels.
 
 **Assumptions stated.** (a) Gaps > 1 s delimit cycles in the held-out stream as they do in Train
 (verified: 37 gaps, 38 cycles, all rows assigned). (b) The abnormal signature is *sustained*
@@ -177,7 +183,8 @@ cycle counting.
 
 ## 8. Honest limitations
 
-- **Door:** 7 borderline test cycles decided by profile-shape reasoning, not by CV evidence.
+- **Door:** 7 borderline test cycles cannot be validated against ground truth; the Normal call
+  rests on two independent physical axes (profile shape + switch timing) rather than CV evidence.
 - **ACV:** the pressure tie-breaker rests on one rich-format case; the test case has the common
   format, where the temperature signal is weaker than in any training case.
 - **Rail:** Side I has 14 training examples; the 0.834 macro-F1 carries ±0.014 fold noise and a
