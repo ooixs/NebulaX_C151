@@ -508,6 +508,34 @@ target for the improvement phase.
 **Test predictions.** `predictions/rail_predictions.csv`: 60 Normal / 2 Side I / 6 Side II
 (training prior implies ≈ 3.5 / 6 of 68). All 8 flagged files are at 11–19 m/s.
 
+### SHM
+
+**Data.** 64 train + 16 test files, each a single stress channel of 581,120 samples (values
+roughly −20…+40, ~180 k rainflow cycles per file, ≤ 26 residue half-cycles). Labels 0.029–0.928.
+
+**Model.** ASTM E1049 rainflow (`rainflow.extract_cycles`) → `S_m = Σ countᵢ · (rangeᵢ/2)^m` →
+`D̂ = S_m / C`. `C` has a closed-form MAPE-optimal solution (weighted median of `S_m / D` with
+weights `1/D`). A grid of 1,968 conventions — `m` ∈ 3.0…7.0 step 0.1, residue as half / full /
+dropped cycles, endurance cut-off ∈ {0, 0.5, 1, 2}, Goodman mean-stress correction with
+σ_u ∈ {none, 100, 200, 400} — was scored by MAPE, selecting the simplest configuration within
+0.002 of the best.
+
+| | Score (1 − MAPE) |
+|---|---|
+| 8-fold CV × 3 seeds, config + C chosen inside each training fold — **shipped** | **0.9736 ± 0.0000** |
+| In-sample, final config on all 64 files | 0.9743 |
+| Same config, C fitted by log-space least squares instead of MAPE-optimal | 0.9733 |
+
+**Shipped configuration.** `m = 5.0`, half-cycle residue (ASTM default), no cut-off, no
+mean-stress correction, `C = 7.386 × 10⁸`. All 24 CV folds independently selected this exact
+configuration. The MAPE curve is sharply peaked: m = 4.9 or 5.1 already costs 1.5–1.7 points,
+m = 4.5 costs 10.6. log(S₅) vs log(D) has correlation 0.9994. Worst single-file relative error is
+14.1 %; the remaining 2.6 % average error is the target of the improvement phase (residue
+convention variants, bilinear S-N curve).
+
+**Test predictions.** `predictions/shm_predictions.csv`: 16 values in 0.029–0.818 (training label
+range 0.029–0.928).
+
 ### References (implementation pointers)
 
 - Wei S. et al. (2020). Subhealth diagnosis of door resistance from motor current — phase-wise
