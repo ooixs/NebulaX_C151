@@ -442,6 +442,40 @@ columns do **not** separate the classes, so a naive "peak current threshold" wou
 **Test predictions.** `predictions/door_predictions.csv`: 38 rows, 26 Normal / 12 Abnormal
 resistance (Train prior: 27 % abnormal).
 
+### ACV
+
+**Loading.** Header regex `Car (\d{2}) - (.+)` + keyword role mapping handles both formats: the
+8-parameter files (`Indoor Average Temperature`, `ACV Control Temperature (Cooling)`, `ACV Running
+Mode`, …) and the 63-parameter `acv_case_04.xlsx` (`Passenger Cabin Temperature Detected Value`,
+`Target Temperature Value`, plus refrigeration pressures). Readings of 0 °C and rows flagged
+`Invalid` are masked. In case 04 only cars 01–04 carry any data; 05–08 are empty and rank last.
+
+**Scoring.** Per timestamp, among cars in a cooling running mode, each car's indoor temperature is
+compared with the median of its peers; per car this is aggregated to `peer_dev_mean`. Cars are
+ranked by that single number (robust-z standardised). Six candidate components (setpoint error
+p95, persistence, positive-deviation fraction, a Ridge healthy-response residual, and a
+discharge-pressure deficit available only in the rich format) were evaluated as a weighted sum
+over a 3^6 grid.
+
+| Scorer | Leave-one-case-out rank-decay (6 cases) | True car rank per case |
+|---|---|---|
+| `peer_dev_mean` only — **shipped** | **0.979** | 1, 1, 1, **2**, 1, 1 |
+| Weighted 6-component sum, weights chosen on the other 5 cases (nested LOO) | 0.958 | 1, 1, 1, 2, 2, 1 |
+| Same, weights chosen on all 6 cases (in-sample, optimistic) | 1.000 | — |
+
+The tuned combination does not beat the untuned baseline once weight selection is held out, so
+the baseline ships (`ACV/code/train.py` encodes this acceptance rule). The one miss is case 04,
+where car 04 is genuinely warmer than the faulty car 01 (car 04 runs Full Cooling 91 % of the time
+with elevated pressures on both sides — a different problem), so the temperature-only signal ranks
+it first; the labelled car is 2nd (0.875 credit).
+
+**Signal strength.** In every 8-parameter training case the faulty car's mean deviation from its
+peers is +0.46 to +1.31 °C while all healthy cars sit within ±0.35 °C.
+
+**Test prediction.** `predictions/acv_predictions.csv`: `01|04|03|07|08|06|02|05`. Car 01 leads on
+every indicator (mean deviation +0.105 °C, p90 +1.0 °C, longest run above +1 °C = 36 samples =
+18 min, highest setpoint error) but the margin is smaller than in any training case.
+
 ### References (implementation pointers)
 
 - Wei S. et al. (2020). Subhealth diagnosis of door resistance from motor current — phase-wise
