@@ -5,32 +5,37 @@ CLI: python "Rail Corrugation/code/predict.py" --input data/Rail_Corrugation/Tes
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 
 import joblib
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[2]
-for p in (str(ROOT), str(ROOT / "Rail Corrugation")):
+for p in (str(ROOT), str(ROOT / "Rail Corrugation/code")):
     if p not in sys.path:
         sys.path.insert(0, p)
-from code.pipeline import CLASSES, aggregate, file_channel_table, side_relative_rows  # noqa: E402
+from pipeline import CLASSES, aggregate, file_channel_table, side_relative_rows  # noqa: E402
 
-MODEL_PATH = ROOT / "Rail Corrugation/model/rail_model.joblib"
+MODEL_PATH = Path(os.environ.get("RAIL_MODEL_PATH", ROOT / "Rail Corrugation/model/rail_model.joblib"))
 _ART = None
 
 
 def _artefact():
     global _ART
     if _ART is None:
+        if not MODEL_PATH.is_file():
+            raise FileNotFoundError(f"Rail model artifact not found: {MODEL_PATH}")
         _ART = joblib.load(MODEL_PATH)
     return _ART
 
 
 def _natural_key(p: Path):
-    return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", p.name)]
+    return [int(t) if t.isdigit() else re.sub(r"\s+", "", t).casefold()
+            for t in re.split(r"(\d+)", p.name)]
 
 
 def predict_one(path: Path, with_proba: bool = False):
@@ -57,13 +62,28 @@ def predict_one(path: Path, with_proba: bool = False):
 def predict(input_path: str | Path, with_proba: bool = False) -> pd.DataFrame:
     p = Path(input_path)
     files = sorted(p.glob("*.csv"), key=_natural_key) if p.is_dir() else [p]
+    if not files:
+        raise ValueError(f"no CSV inputs found: {p}")
     return pd.DataFrame([predict_one(f, with_proba) for f in files])
+
+
+def atomic_csv(frame: pd.DataFrame, output: Path) -> None:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=f".{output.name}.", dir=output.parent)
+    os.close(fd)
+    try:
+        frame.to_csv(name, index=False)
+        os.replace(name, output)
+    except BaseException:
+        Path(name).unlink(missing_ok=True)
+        raise
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", required=True)
-    ap.add_argument("--output", required=True)
+    ap.add_argument("--output", required=True, type=Path)
+    ap.add_argument("--with-evidence", action="store_true")
     a = ap.parse_args()
-    predict(a.input).to_csv(a.output, index=False)
+    atomic_csv(predict(a.input, with_proba=a.with_evidence), a.output)
     print("wrote", a.output)
