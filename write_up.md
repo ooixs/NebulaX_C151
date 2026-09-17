@@ -131,13 +131,20 @@ model trained on 544 (file, side) rows with own-side and side-relative features,
 Normal / Side I / Side II with one threshold τ — reaches 0.819 with RF and **0.834 ± 0.014 with
 ExtraTrees** (Side I recall 10/14, Side II 20/24, Normal 228/234).
 
-**Improvement phase (13 variants on identical folds).** ExtraTrees was the only significant gain.
+**Improvement phase (20 variants on identical folds).** ExtraTrees was the only significant gain.
 Ablations were informative: dropping cross-rail (relative) features costs 5.5 points and dropping
 own-side features costs 15, confirming both halves of the design (Hassanieh et al. 2023 on
 left–right coupling). **Side-mirroring augmentation hurt by 5 points** — the two sides are not
 symmetric enough to swap, vindicating the Methodology's caution. LightGBM, logistic regression,
-excess-only features, deeper trees, more trees and RF/ET/LGBM averages did not beat ET; five
-consecutive non-improvements triggered the stop rule.
+excess-only features, deeper trees, more trees, RF/ET/LGBM averages, 5-seed averaging, per-side
+decision thresholds (+0.007, within noise) and window-level augmentation (2 × 0.5 s, −6.5 points:
+halving the spectral record costs more than doubling the sample count gains) all failed the
+acceptance rule; the stop criterion was met twice over.
+
+**Robustness check.** Because file numbers may encode acquisition order, we re-ran CV over
+contiguous file-number blocks: macro F1 drops to 0.778. Fault files cluster mildly in numbering
+(two blocks contain no Side I at all), so part of the drop is mechanical, but we treat the honest
+held-out expectation as a range, ≈ 0.75–0.85.
 
 **Test predictions.** 57 Normal / 5 Side I / 6 Side II of 68 (training prior implies ≈ 3.5 / 6).
 
@@ -187,8 +194,9 @@ cycle counting.
   rests on two independent physical axes (profile shape + switch timing) rather than CV evidence.
 - **ACV:** the pressure tie-breaker rests on one rich-format case; the test case has the common
   format, where the temperature signal is weaker than in any training case.
-- **Rail:** Side I has 14 training examples; the 0.834 macro-F1 carries ±0.014 fold noise and a
-  further ~0.02 optimism from tuning τ on out-of-fold probabilities.
+- **Rail:** Side I has 14 training examples; the 0.834 macro-F1 carries ±0.014 fold noise, ~0.02
+  optimism from tuning τ on out-of-fold probabilities, and drops to 0.778 under contiguous-block
+  CV — we quote 0.75–0.85 as the honest expectation.
 - **SHM:** the residual 2.6 % MAPE is not recoverable from the disclosed information.
 
 ## References

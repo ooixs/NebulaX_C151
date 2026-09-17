@@ -581,11 +581,28 @@ went from 2/14 (3-class) to 10/14.
 | 12 | ET + RF average | 0.828 |
 | 13 | ET + side-mirroring augmentation | 0.784 |
 
-Variants 9–13 are five consecutive non-improvements on ExtraTrees → stop rule met. Two findings
-worth keeping: (a) the ablations confirm both halves of the feature design — dropping cross-rail
-features costs 5.5 points and dropping own-side features costs 15; (b) **side-mirroring
-augmentation hurts** (−5 points), so the two sides are not symmetric enough to swap and the
-Methodology's caution about it was warranted.
+| 14 | ET rerun (reference for phase 3) | 0.834 ± 0.014 |
+| 15 | Per-side thresholds (τ₁, τ₂) | 0.840 ± 0.011 |
+| 16 | 5-seed averaged ET | 0.834 ± 0.017 |
+| 17 | 5-seed ET + per-side thresholds | 0.839 ± 0.012 |
+| 18 | Window augmentation (2 × 0.5 s, window-averaged inference) | 0.769 ± 0.004 |
+| 19 | Windows + per-side thresholds | 0.797 |
+| 20 | (File + window probabilities)/2 + per-side thresholds | 0.825 |
+
+Variants 9–13 and again 15–20 fail the acceptance rule (> baseline + 1 std = 0.848); the best
+Side I-targeted idea (per-side thresholds, +0.007) is within fold noise, and window augmentation
+*hurts* — halving the spectral record costs more than doubling the sample count gains. Findings
+worth keeping: (a) ablations confirm both halves of the feature design — dropping cross-rail
+features costs 5.5 points, dropping own-side features 15; (b) **side-mirroring augmentation
+hurts** (−5 points), so the sides are not symmetric enough to swap.
+
+**Adjacency-leakage check** (`notebooks/leakage_check.py`). File numbers may encode acquisition
+order, so a 5-fold CV over *contiguous file-number blocks* was run as a stress test:
+**block-CV macro F1 = 0.778** (0.965 / 0.545 / 0.824 per class) vs 0.834 stratified. Part of the
+gap is mechanical — fault files cluster mildly in numbering (two blocks contain zero Side I, so
+the hardest folds train on 8–10 of the 14 Side I examples), and τ is a single global tune — but
+some may be genuine adjacency correlation. Honest held-out expectation is therefore
+**≈ 0.75–0.85**, not a point estimate at 0.83.
 
 **Test predictions.** `predictions/rail_predictions.csv`: 57 Normal / 5 Side I / 6 Side II
 (training prior implies ≈ 3.5 / 6 of 68).
