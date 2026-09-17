@@ -34,9 +34,24 @@ NebulaX/
 │   ├── ACV/{Train,Test}/        #   acv_case_01..06.xlsx, Train_Labels.csv, acv_test_case.xlsx
 │   ├── Rail_Corrugation/{Train,Test}/  # Train1..272.csv, Train_Labels.csv, Test1..68.csv
 │   └── SHM/{Train,Test}/        #   train01..64.csv, Train_Labels.csv, test01..16.csv
-├── docs/references/             # Info Kits + supporting docs, per subsystem
+├── docs/
+│   ├── 01_Problem_Statement_3_Specifications.md   # top-level spec (deliverables, scoring)
+│   ├── references/<Subsystem>/  # Info Kits + supporting docs (authoritative task definitions)
+│   └── example_submission/      # the 4 sample *_predictions.csv showing the exact output schema
 └── tests/
 ```
+
+All 446 files of the upstream `PS3/` folder are mirrored here (`02_Datasets` → `data/`,
+`03_References` → `docs/references/`, `04_Example_Submission` → `docs/example_submission/`);
+verified byte-identical up to CRLF line endings.
+
+## Environment
+
+- **GPU:** NVIDIA GeForce RTX 4090, 24 GB, driver 595.79 / CUDA 13.2 — available but not
+  required; every model in the Methodology runs on CPU at these data sizes.
+- **Python is not installed** on the dev machine (no `python`, `python3` or `py`). Install Python
+  3.11/3.12 and create a venv before starting; add a CUDA build of `torch` only if GPU MiniROCKET
+  is wanted.
 
 ## Submission packaging (team name: `C151`)
 
@@ -91,6 +106,10 @@ adopting a challenger over the baseline.
 5. **Interface.** `<Subsystem>/code/predict.py` exposes `predict(input_path: str | Path) ->
    pandas.DataFrame` returning the exact output schema for that subsystem. Trained artefacts live
    in `<Subsystem>/model/` and are loaded lazily. `app/` calls `predict` and writes the CSV.
+   The same file also has an `argparse` entry point — `python predict.py --input <path> --output
+   <csv>` — because the Info Kits reference a `predict.py --input/--output` CLI even though the
+   top-level spec only mandates the app; the wrapper covers both readings. For Rail and SHM,
+   `--input` may be a directory (one output row per file).
 6. **Stack.** `pandas`, `numpy`, `scipy`, `scikit-learn`; `lightgbm` optional; `sktime` (for
    MiniROCKET); `ruptures`; `rainflow`; `openpyxl`; `streamlit` for the app.
 
@@ -101,9 +120,12 @@ adopting a challenger over the baseline.
 **Input.** One CSV stream, 17 columns per row: timestamp (`Y-M-D-h-m-s-ms`, hyphen-separated, not
 zero-padded), motor current (mA), motor voltage (10 mV), back-EMF, door opening time (0.1 s),
 door closing time (0.1 s), close command, open command, DCSR, DCSL, DLSR, DLSL, door opened, door
-locked, opening, closing, door position. `Train_Segments_Answer.csv` gives `start_time`,
+locked, opening, closing, door position. Actual header names differ slightly from the Info Kit
+(e.g. `Motor electrodynamic force` is the back-EMF column; `Door leaf position` is position) — map
+by position, not by exact name. **There are no car / door identifier columns** in `Train.csv` or
+`Test.csv`, despite the headers doc listing them. `Train_Segments_Answer.csv` gives `start_time`,
 `end_time`, `operation` (Open/Close), `status` (Normal / Abnormal resistance), `n_rows` per true
-cycle.
+cycle. Sizes: Train 18,036 rows / 110 cycles (80 Normal, 30 Abnormal resistance); Test 6,253 rows.
 
 **Output.** `door_predictions.csv` with columns `start_time`, `end_time`, `prediction`; one row per
 predicted cycle; timestamps in the native format or ISO.
@@ -140,9 +162,9 @@ or the command flags — needed for per-operation references below, not for outp
 
 #### 1.3 Features per segment
 
-Compute from Normal training cycles only a **reference current profile** per operation (and per
-door if `Car Number` / `Door Number` take multiple values in Train): resample current onto ~20
-bins of normalised position (fallback: normalised time), take median and IQR per bin.
+Compute from Normal training cycles only a **reference current profile** per operation (Open and
+Close separately; there are no door identifiers, so no per-door references): resample current onto
+~20 bins of normalised position (fallback: normalised time), take median and IQR per bin.
 
 Per-segment feature vector:
 
@@ -166,8 +188,9 @@ Keep absolute current values and raw durations; do not amplitude-normalise a cyc
 
 #### 1.5 Validation
 
-- Split `Train.csv` into contiguous time blocks (e.g. 5 blocks); rotate one out. If door
-  identifiers exist, also run a leave-one-door-out split.
+- Split `Train.csv` into contiguous time blocks (e.g. 5 blocks of ~22 cycles); rotate one out.
+  With only 30 abnormal cycles, check each block holds at least ~5 so per-fold scores are
+  meaningful.
 - Score the **full pipeline** (segment → classify) on the held-out block with `common.metrics`.
 - Report: segmentation-only IoU-F1, classification precision/recall per class on true segments, and
   end-to-end IoU-F1. Acceptance: challenger must beat baseline on end-to-end IoU-F1 in ≥ 4/5 folds.
@@ -315,9 +338,11 @@ mean, max, 75th percentile, std, and count of channels with excess > 2, for ever
 
 ### 4. SHM — rainflow counting + calibrated Miner's rule
 
-**Input.** One CSV per equal-length time segment of dynamic stress from a measurement point;
-possibly several channels ("all monitoring points"). `Train_Labels.csv` gives `filename`,
-`damage`. File numbers are random identifiers, not chronology.
+**Input.** One CSV per equal-length time segment of dynamic stress from a measurement point.
+Each file is a **single headerless column of 581,120 samples** (one channel, no timestamp; the
+sampling rate is not stated). `Train_Labels.csv` gives `filename`, `damage`; training labels range
+0.0286–0.928 with no zeros, so MAPE is well-defined. File numbers are random identifiers, not
+chronology.
 
 **Output.** `shm_predictions.csv` with `file_id`, `prediction` (a single positive number).
 
@@ -325,14 +350,14 @@ possibly several channels ("all monitoring points"). `Train_Labels.csv` gives `f
 
 #### 4.1 Inspect first
 
-Before modelling, record for the training set: number of columns per file, column names/units,
-row count (sampling rate × duration), value ranges, and whether the label plausibly corresponds to
-one channel, the sum over channels, or the max. Check `Train_Labels.csv` for zero or negative
-values (MAPE is undefined at zero).
+Confirm on all 80 files that the shape is uniform (1 column × 581,120 rows) and record the value
+range and units (stress values are O(1), sign-alternating). Check whether the 16 test files share
+the same length — if not, damage must be treated as per-file, not per-unit-time, exactly as the
+labels imply.
 
 #### 4.2 Damage model
 
-For each file and channel, run rainflow (`rainflow.extract_cycles`, ASTM E1049-85; yields
+For each file, run rainflow on the single channel (`rainflow.extract_cycles`, ASTM E1049-85; yields
 `range, mean, count∈{0.5, 1.0}`). With amplitude `a_i = range_i / 2`:
 
 ```
@@ -352,7 +377,6 @@ switch evaluated in the grid:
 |---|---|
 | Residue treatment | half cycles (ASTM default) / count residue as full cycles / repeat-and-recount |
 | Cycle magnitude | amplitude (`range/2`) / range |
-| Channel aggregation | sum over channels / max channel / each single channel |
 | Mean-stress correction | none / Goodman (`a_eq = a / (1 − mean/σ_u)` with σ_u fitted) |
 | Endurance cut-off | none / ignore cycles with `a < a_0` (a_0 fitted) |
 
@@ -361,7 +385,7 @@ squares only to initialise `m`. Select the simplest configuration within one std
 
 #### 4.4 Residual model (only if 4.3 leaves systematic error)
 
-If out-of-fold residuals correlate with an observable (e.g. RMS, file duration, channel), fit a
+If out-of-fold residuals correlate with an observable (e.g. RMS, kurtosis, mean stress level), fit a
 small `Ridge` or shallow GBM predicting `log(D / D̂)` from rainflow-derived features
 (`S_m` for m ∈ {3, 4, 5}, amplitude-histogram moments, RMS, peak count), with sample weights
 `1/D`. Apply as a multiplicative correction.
