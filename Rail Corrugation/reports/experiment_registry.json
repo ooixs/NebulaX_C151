@@ -1,0 +1,16 @@
+{
+  "campaign": "rail-corrugation/exp-20260918-reproducible-campaign",
+  "base_commit": "e7303a00b6576658e1471053ef84b64cb90fdbe8",
+  "protocol": "5x3 repeated stratified plus duplicate-safe contiguous blocks; thresholds selected by inner OOF",
+  "experiments": [
+    {"id": "RC-E00", "change": "full immutable data audit", "conclusion": "retain"},
+    {"id": "RC-E01", "change": "speed-only diagnostic", "stratified_macro_f1": 0.3941, "blocked_macro_f1": 0.4034, "conclusion": "diagnostic only"},
+    {"id": "RC-E02", "change": "nested-threshold current shared-side baseline", "stratified_macro_f1": 0.8087, "blocked_macro_f1": 0.7817, "speed_matched_macro_f1": 0.7997, "conclusion": "promote"},
+    {"id": "RC-E03C", "change": "remove raw speed predictor", "stratified_macro_f1": 0.8249, "blocked_macro_f1": 0.7361, "conclusion": "reject: grouped regression"},
+    {"id": "RC-E03D", "change": "remove raw speed and speed-bin predictors", "stratified_macro_f1": 0.8107, "blocked_macro_f1": 0.7672, "conclusion": "reject: no grouped gain"},
+    {"id": "RC-E03E", "change": "nearest available Normal speed reference", "stratified_macro_f1": 0.8107, "blocked_macro_f1": 0.7672, "conclusion": "reject: prediction-identical to RC-E03D"},
+    {"id": "RC-E03F", "change": "fold-local speed-matched Normal weighting", "stratified_macro_f1": 0.8195, "blocked_macro_f1": 0.7538, "conclusion": "reject: grouped regression"},
+    {"id": "RC-E04A", "change": "position-level Normal reference", "stratified_macro_f1": 0.8141, "blocked_macro_f1": 0.7793, "conclusion": "reject: tied without promotion gain"}
+  ],
+  "stopping_rule": "Two consecutive controlled rounds produced no eligible challenger; later feature/model searches were not run."
+}

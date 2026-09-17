@@ -9,7 +9,7 @@ submission spec, one copy sits at the top level of `Optional_Items/`.
 |---|---|---|---|---|
 | Door | Segment a continuous stream into door cycles, label each Normal / Abnormal resistance | Timestamp-gap segmentation → per-cycle current-profile features → RF + logistic-regression ensemble | 5 contiguous time blocks of `Train.csv` | IoU-weighted F1 **1.000** (segmentation alone 1.000) |
 | ACV | Rank 8 cars by refrigerant-leak likelihood | Peer-relative cabin-temperature deviation, plus a fixed-weight discharge-pressure tie-breaker where pressure telemetry exists | Leave-one-case-out over 6 cases | Rank-decay **1.000** (0.979 from temperature alone) |
-| Rail Corrugation | Normal / Side I / Side II per 1-second recording | Speed-normalised spectral features → shared per-side ExtraTrees detector | 5-fold stratified × 3 repeats, 272 files | Macro F1 **0.834 ± 0.014** |
+| Rail Corrugation | Normal / Side I / Side II per 1-second recording | Speed-normalised spectral features → shared per-side ExtraTrees detector | Nested-threshold 5-fold stratified × 3 repeats, plus duplicate-safe blocks | Macro F1 **0.809 ± 0.019**; blocked **0.782** |
 | SHM | Cumulative fatigue damage per file | ASTM rainflow + Miner's rule, `D = Σ nᵢ aᵢ⁵ / C`, C fitted for MAPE | 8-fold × 3 seeds, 64 files | 1 − MAPE **0.974 ± 0.000** |
 
 Every number above is out-of-fold; every fitted component (reference profiles, thresholds, S-N
@@ -125,26 +125,27 @@ count of channels > +2 IQR; plus Side I − Side II differences, same-side domin
 agreement, and per-car maxima to preserve local evidence. Raw asymmetry is already clear: RMS
 ratio Side I / Side II is 1.02 (Normal), 1.13 (Side I), 0.78 (Side II).
 
-**Models.** A 3-class RandomForest reaches only 0.652 macro-F1 by argmax (Side I F1 0.235) and
-0.815 with OOF-tuned class-probability scaling. The **shared per-side detector** — one binary
-model trained on 544 (file, side) rows with own-side and side-relative features, decoded to
-Normal / Side I / Side II with one threshold τ — reaches 0.819 with RF and **0.834 ± 0.014 with
-ExtraTrees** (Side I recall 10/14, Side II 20/24, Normal 228/234).
+**Models and corrected validation.** The **shared per-side detector** is one binary model trained
+on 544 (file, side) rows with own-side and side-relative features, decoded to Normal / Side I /
+Side II with one threshold. The former **0.834 ± 0.014** result selected that threshold on the
+same OOF predictions used for reporting. Under the new nested procedure, each outer-fold
+threshold is selected only from inner-training OOF predictions. ExtraTrees reaches **0.809 ±
+0.019** repeated-stratified macro F1 (per-class F1 0.970 / 0.638 / 0.818). The difference is
+explained threshold-selection optimism rather than a failure to reproduce the feature pipeline.
 
-**Improvement phase (20 variants on identical folds).** ExtraTrees was the only significant gain.
-Ablations were informative: dropping cross-rail (relative) features costs 5.5 points and dropping
-own-side features costs 15, confirming both halves of the design (Hassanieh et al. 2023 on
-left–right coupling). **Side-mirroring augmentation hurt by 5 points** — the two sides are not
-symmetric enough to swap, vindicating the Methodology's caution. LightGBM, logistic regression,
-excess-only features, deeper trees, more trees, RF/ET/LGBM averages, 5-seed averaging, per-side
-decision thresholds (+0.007, within noise) and window-level augmentation (2 × 0.5 s, −6.5 points:
-halving the spectral record costs more than doubling the sample count gains) all failed the
-acceptance rule; the stop criterion was met twice over.
+**Controlled follow-up.** Speed alone reaches 0.394 stratified and 0.403 blocked macro F1, proving
+it is a material shortcut but not a sufficient detector. Removing raw speed improves stratified
+F1 to 0.825 but drops blocked F1 to 0.736. Removing both speed predictors, fold-local speed
+matching, nearest-bin Normal references, and position-level references also fail the predeclared
+grouped promotion rule. Raw speed therefore remains in the frozen comparator, with the
+confounding risk stated explicitly. Two consecutive controlled rounds produced no eligible
+challenger, so no open-ended spectral/model search was run.
 
-**Robustness check.** Because file numbers may encode acquisition order, we re-ran CV over
-contiguous file-number blocks: macro F1 drops to 0.778. Fault files cluster mildly in numbering
-(two blocks contain no Side I at all), so part of the drop is mechanical, but we treat the honest
-held-out expectation as a range, ≈ 0.75–0.85.
+**Audit and robustness.** All 340 source recordings pass full schema/numeric checks. Two exact
+duplicate train pairs (107/115 and 165/187) are kept together in contiguous file-number folds.
+Blocked macro F1 is **0.782** with confusion matrix `[[225,4,5],[5,8,1],[0,3,21]]`. High-speed
+matched macro F1 is 0.800, while hold-one-speed-bin-out transfer is only 0.481; deployment beyond
+observed speed support is therefore a serious limitation.
 
 **Test predictions.** 57 Normal / 5 Side I / 6 Side II of 68 (training prior implies ≈ 3.5 / 6).
 
@@ -194,9 +195,9 @@ cycle counting.
   rests on two independent physical axes (profile shape + switch timing) rather than CV evidence.
 - **ACV:** the pressure tie-breaker rests on one rich-format case; the test case has the common
   format, where the temperature signal is weaker than in any training case.
-- **Rail:** Side I has 14 training examples; the 0.834 macro-F1 carries ±0.014 fold noise, ~0.02
-  optimism from tuning τ on out-of-fold probabilities, and drops to 0.778 under contiguous-block
-  CV — we quote 0.75–0.85 as the honest expectation.
+- **Rail:** Side I has only 14 training examples. Nested-threshold macro F1 is 0.809 ± 0.019 and
+  duplicate-safe blocked F1 is 0.782; speed-bin transfer is 0.481. Raw speed remains useful but
+  confounded, so performance outside observed speed/acquisition support may be substantially lower.
 - **SHM:** the residual 2.6 % MAPE is not recoverable from the disclosed information.
 
 ## References

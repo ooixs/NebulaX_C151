@@ -557,6 +557,14 @@ in the raw data: RMS ratio Side I / Side II is 1.02 (Normal), 1.13 (Side I), 0.7
 
 **Models.** 5-fold stratified CV × 3 repeats (272 files), reference + thresholds refit per fold.
 
+> **Current leakage-safe evidence (2026-09-18).** The tables below preserve the original
+> development history, where the decision threshold was tuned on the same OOF predictions used
+> for reporting. RC-E02 now selects every outer-fold threshold from inner-training OOF
+> predictions: macro F1 **0.809 ± 0.019**, with per-class F1 0.970 / 0.638 / 0.818. A full audit
+> found exact duplicate pairs Train107/115 and Train165/187; keeping each family together gives
+> blocked macro F1 **0.782**. High-speed matched F1 is 0.800 and speed-bin transfer F1 is 0.481.
+> See `Rail Corrugation/reports/validation_report.md` for the frozen protocol and ablations.
+
 | Model | OOF macro F1 (mean ± std over repeats) | Per-class F1 (Normal / Side I / Side II) |
 |---|---|---|
 | RF 3-class, argmax | 0.652 ± 0.015 | 0.961 / 0.235 / 0.810 |
@@ -611,8 +619,9 @@ the hardest folds train on 8–10 of the 14 Side I examples), and τ is a single
 some may be genuine adjacency correlation. Honest held-out expectation is therefore
 **≈ 0.75–0.85**, not a point estimate at 0.83.
 
-**Test predictions.** `predictions/rail_predictions.csv`: 57 Normal / 5 Side I / 6 Side II
-(training prior implies ≈ 3.5 / 6 of 68).
+**Test predictions.** The promoted nested-threshold artifact regenerates
+`predictions/rail_predictions.csv` deterministically; its distribution and SHA-256 are recorded
+in `weights/Rail Corrugation/experiments/final/frozen_model.json`.
 
 ### SHM
 
