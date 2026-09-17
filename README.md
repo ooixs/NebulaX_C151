@@ -75,6 +75,13 @@ C151/
 
 Omit any subsystem folder we did not attempt.
 
+**`python package.py`** assembles `C151/` automatically (predictions.zip with the four CSVs at the
+zip's top level, self-contained `app/` including `common/` and every `<Sub>/{code,model}`,
+`Optional_Items/` with the exact folder names) and warns about anything missing (currently: app
+sources and the demo video). **`pytest tests`** runs the metric unit tests plus an end-to-end
+smoke test of each subsystem's `predict.py` CLI against a real held-out file (schema, label
+vocabulary, timestamp format, car-id format).
+
 Conventions:
 - `data/` is never committed; copy the `02_Datasets/<Subsystem>` folders from the problem-statement repo into it.
 - Each `<Subsystem>/code/` exposes a `predict(input_path) -> DataFrame` entry point that the app calls,
