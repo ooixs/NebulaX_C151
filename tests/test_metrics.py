@@ -47,6 +47,37 @@ def test_shm_range_binning_and_model_roundtrip():
         damage_sum(cyc, 2.0, range_bins=2, range_bin_width=1.0)
 
 
+def test_shm_research_starts_without_feature_caches(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+    from common import research as tracking
+    from SHM.code import train
+    from SHM.code.pipeline import cycles, damage_sum
+
+    data = tmp_path / "data" / "SHM"
+    (data / "Train").mkdir(parents=True)
+    labels = []
+    for i in range(8):
+        series = np.array([0.0, 1.0, 0.0, -1.0, 0.0]) * (1 + i / 5)
+        filename = f"train{i + 1:02d}.csv"
+        pd.Series(series).to_csv(data / "Train" / filename, header=False, index=False)
+        labels.append(dict(filename=filename, damage=damage_sum(cycles(series), 5.0) / 1e6))
+    pd.DataFrame(labels).to_csv(data / "Train_Labels.csv", index=False)
+    monkeypatch.setattr(train, "DATA", data)
+    monkeypatch.setattr(train, "WEIGHTS", tmp_path / "weights" / "SHM")
+    monkeypatch.setattr(train, "MODEL", tmp_path / "SHM" / "model")
+    run_class = tracking.ResearchRun
+    monkeypatch.setattr(tracking, "ResearchRun", lambda *args: run_class(*args, root=tmp_path))
+    args = SimpleNamespace(run_id="cold-start", min_delta=0.002, patience=5, folds=2, repeats=1, jobs=1, ship=False)
+    train.research(args)
+    folder = train.WEIGHTS / "runs" / args.run_id
+    summary = json.loads((folder / "summary.json").read_text())
+    assert summary["stop_reason"] == "score_ceiling"
+    assert summary["best_score"] == pytest.approx(1.0)
+    assert (folder / "shm_model.json").exists()
+    assert not (train.MODEL / "shm_model.json").exists()
+
+
 def test_research_plateau_requires_meaningful_improvement():
     from common.research import Plateau
 
@@ -117,6 +148,11 @@ def test_door_nested_threshold_excludes_outer_validation_labels(monkeypatch):
     assert before["folds"][0]["threshold"] == after["folds"][0]["threshold"]
     for fold in before["folds"]:
         assert set(fold["threshold_training_indices"]).isdisjoint(fold["validation_indices"])
+    truth = train.segments_to_frame(segs).assign(status=labels)
+    truth["end_time"] = [s["t"].iloc[0] + pd.Timedelta(seconds=4) for s in segs]
+    partial = train.run_cv(segs, labels, 3, "fake", nested=True, answer=truth)
+    assert partial["oof_iou_f1"] == pytest.approx(0.5)
+    assert all(fold["iou_f1"] == pytest.approx(0.5) for fold in partial["folds"])
 
 
 def test_nested_file_folds_keep_outer_validation_out_of_calibration():

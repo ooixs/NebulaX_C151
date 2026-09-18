@@ -7,14 +7,23 @@ submission spec, one copy sits at the top level of `Optional_Items/`.
 
 | Subsystem | Task | Model shipped | Validation | Score on our validation |
 |---|---|---|---|---|
-| Door | Segment a continuous stream into door cycles, label each Normal / Abnormal resistance | Timestamp-gap segmentation → per-cycle current-profile features → RF + logistic-regression ensemble | 5 contiguous time blocks of `Train.csv` | IoU-weighted F1 **1.000** (segmentation alone 1.000) |
+| Door | Segment a continuous stream into door cycles, label each Normal / Abnormal resistance | Timestamp-gap segmentation → per-cycle current-profile features → RF + logistic-regression ensemble | 5 contiguous time blocks with inner blocked threshold selection | IoU-weighted F1 **1.000** (segmentation alone 1.000) |
 | ACV | Rank 8 cars by refrigerant-leak likelihood | Peer-relative cabin-temperature deviation, plus a fixed-weight discharge-pressure tie-breaker where pressure telemetry exists | Leave-one-case-out over 6 cases | Rank-decay **1.000** (0.979 from temperature alone) |
-| Rail Corrugation | Normal / Side I / Side II per 1-second recording | Speed-normalised spectral features → shared per-side ExtraTrees detector | 5-fold stratified × 3 repeats, 272 files | Macro F1 **0.834 ± 0.014** |
-| SHM | Cumulative fatigue damage per file | ASTM rainflow + Miner's rule, `D = Σ nᵢ aᵢ⁵ / C`, C fitted for MAPE | 8-fold × 3 seeds, 64 files | 1 − MAPE **0.974 ± 0.000** |
+| Rail Corrugation | Normal / Side I / Side II per 1-second recording | Speed-normalised spectral features → shared per-side ExtraTrees detector | 5-fold × 3 repeats with nested reference/threshold fitting, 272 files | Macro F1 **0.823227 ± 0.016735** |
+| SHM | Cumulative fatigue damage per file | ASTM rainflow + Miner's rule, `D = Σ nᵢ aᵢ⁵ / C`, corrected MAPE-optimal C | 8-fold × 3 seeds, 64 files | 1 − MAPE **0.974120 ± 0.000252** |
 
-Every number above is out-of-fold; every fitted component (reference profiles, thresholds, S-N
-constants) was refit inside the training fold. The README's *Methodology* and *Results* sections
-contain the full specification and all intermediate tables; this document explains the reasoning.
+These are the results of the `2026-09-18-autoresearch` rerun. Thresholds, reference profiles and
+calibration constants were fitted without the corresponding outer validation labels. These are
+training-data validation estimates, not independent test scores; standard deviations across
+repeats are not confidence intervals. The fixed ACV physics rule was previously developed on
+these same six cases, including just one rich-format pressure case.
+
+Door and ACV stopped at the score ceiling. Rail and SHM each stopped after five consecutive
+challengers failed to exceed both the incumbent CV standard deviation and the practical gain
+floor (0.005 macro-F1 for Rail, 0.002 score for SHM). All four retained models were refitted on
+all training data, with previous artefacts preserved under `weights/<Subsystem>/runs/`.
+The README records the current trial results and distinguishes them from the earlier experiments
+summarised below.
 
 ## 2. Working principles
 
@@ -53,7 +62,7 @@ duration and the controller's own opening/closing-time columns do **not** separa
 RandomForest, LightGBM and an RF + logistic-regression ensemble all reach OOF IoU-F1 = 1.000 with
 wide probability margins.
 
-**Improvement phase.** With CV saturated, effort went into robustness on the test stream. A margin
+**Earlier improvement phase.** With CV saturated, effort went into robustness on the test stream. A margin
 probe found 7 test cycles inside the gap between the training classes (Open 229–236 mA, Close
 215–220 mA) on which LightGBM said Abnormal and RF / LR / SVM said Normal. Their excess-current
 profiles show a single-bin start-up spike (z ≈ 12–38, also present in clearly-normal test cycles)
@@ -125,26 +134,31 @@ count of channels > +2 IQR; plus Side I − Side II differences, same-side domin
 agreement, and per-car maxima to preserve local evidence. Raw asymmetry is already clear: RMS
 ratio Side I / Side II is 1.02 (Normal), 1.13 (Side I), 0.78 (Side II).
 
-**Models.** A 3-class RandomForest reaches only 0.652 macro-F1 by argmax (Side I F1 0.235) and
+**Earlier models.** A 3-class RandomForest reached 0.652 macro-F1 by argmax (Side I F1 0.235) and
 0.815 with OOF-tuned class-probability scaling. The **shared per-side detector** — one binary
 model trained on 544 (file, side) rows with own-side and side-relative features, decoded to
-Normal / Side I / Side II with one threshold τ — reaches 0.819 with RF and **0.834 ± 0.014 with
-ExtraTrees** (Side I recall 10/14, Side II 20/24, Normal 228/234).
+Normal / Side I / Side II with one threshold τ — reached 0.819 with RF and **0.834 ± 0.014 with
+ExtraTrees** (Side I recall 10/14, Side II 20/24, Normal 228/234). These threshold-tuned OOF
+scores include selection optimism and are superseded by the nested validation in the summary.
 
-**Improvement phase (20 variants on identical folds).** ExtraTrees was the only significant gain.
+**Earlier improvement phase (20 variants on identical folds).** ExtraTrees was the only accepted gain.
 Ablations were informative: dropping cross-rail (relative) features costs 5.5 points and dropping
 own-side features costs 15, confirming both halves of the design (Hassanieh et al. 2023 on
-left–right coupling). **Side-mirroring augmentation hurt by 5 points** — the two sides are not
-symmetric enough to swap, vindicating the Methodology's caution. LightGBM, logistic regression,
+left–right coupling). The legacy mirroring trial misaligned swapped rows and their binary
+labels, so its degradation is not evidence of physical asymmetry and it is excluded from the
+current research pipeline. LightGBM, logistic regression,
 excess-only features, deeper trees, more trees, RF/ET/LGBM averages, 5-seed averaging, per-side
 decision thresholds (+0.007, within noise) and window-level augmentation (2 × 0.5 s, −6.5 points:
 halving the spectral record costs more than doubling the sample count gains) all failed the
 acceptance rule; the stop criterion was met twice over.
 
-**Robustness check.** Because file numbers may encode acquisition order, we re-ran CV over
-contiguous file-number blocks: macro F1 drops to 0.778. Fault files cluster mildly in numbering
-(two blocks contain no Side I at all), so part of the drop is mechanical, but we treat the honest
-held-out expectation as a range, ≈ 0.75–0.85.
+**Current rerun and robustness checks.** References and thresholds are now refitted in an inner
+3-fold loop for every outer fold: macro F1 is **0.823227 ± 0.016735**. Ratios/side identity,
+paired-channel contrasts, compact features, compact RF and compact RBF-SVM all failed the
+predeclared improvement rule, so the original ExtraTrees architecture was retained and retrained
+with a final threshold of 0.25. Fresh nested partitions scored **0.803706**; contiguous
+file-number blocks scored **0.765362**. Both side-rows always stay with their source file.
+The spread demonstrates validation sensitivity, not a guaranteed interval for test performance.
 
 **Test predictions.** 57 Normal / 5 Side I / 6 Side II of 68 (training prior implies ≈ 3.5 / 6).
 
@@ -157,10 +171,9 @@ cycles, ≤ 26 residue half-cycles). Labels 0.029–0.928, no zeros.
 σ^m · N = C, so this is a physics-recovery problem. ASTM E1049 rainflow → `S_m = Σ countᵢ ·
 (rangeᵢ/2)^m` → `D̂ = S_m / C`. Because the judge metric is MAPE, `C` is fitted as the
 MAPE-optimal scalar (weighted median of `S_m / D` with weights `S_m / D`; de Myttenaere et al. 2016),
-not by log-space least squares. The SHM scores below predate this calibration correction and await
-revalidation.
+not by log-space least squares. The corrected all-file fit is `C = 735168784.8379046`.
 
-A grid of 1,968 conventions — m ∈ 3.0…7.0 step 0.1, residue as half / full / dropped cycles,
+**Earlier calibration.** A grid of 1,968 conventions — m ∈ 3.0…7.0 step 0.1, residue as half / full / dropped cycles,
 endurance cut-off ∈ {0, 0.5, 1, 2}, Goodman correction with σ_u ∈ {none, 100, 200, 400} — was
 scored inside 8-fold CV × 3 seeds, choosing the simplest configuration within 0.002 of the best.
 **All 24 folds selected m = 5.0, ASTM half-cycle residue, no cut-off, no mean-stress
@@ -168,22 +181,32 @@ correction.** CV score 0.9736 ± 0.0000; in-sample 0.9743; log(S₅) vs log(D) h
 0.9994 and slope 0.9965. The MAPE curve is sharply peaked: m = 4.9 or 5.1 costs 1.5–1.7 points,
 m = 4.5 costs 10.6. m = 5 is the standard slope for welded steel details, which is reassuring.
 
-**Improvement phase (7 refinements).** Residual ratios span 0.95–1.16 and correlate only weakly
-with series skewness. A finer m grid, bilinear S-N, Goodman/Gerber mean-stress, closing the
-largest residue loop, a ridge residual model and a power-law recalibration all land within
-+0.0011 of the baseline — not significant on 64 files — so the one-parameter model is kept. The
-remaining ~2.5 % is most plausibly an undisclosed detail of the reference implementation's
-cycle counting.
+**Earlier improvement phase (7 refinements).** Residual ratios spanned 0.95–1.16 and correlated
+only weakly with series skewness. A finer m grid, bilinear S-N, Goodman/Gerber mean-stress,
+closing the largest residue loop, a ridge residual model and a power-law recalibration all
+landed within +0.0011 of that baseline, below the practical improvement floor.
 
-**Test predictions.** 16 values in 0.029–0.818 (training label range 0.029–0.928).
+**Current rerun.** Fixing the MAPE calibration weights raised like-for-like CV from **0.973615**
+to **0.974120 ± 0.000252**. Five further families tested range-bin counts, finer bin counts,
+alternative bin centres, fine S-N exponents and residue conventions. The strongest, fine
+exponents, reached **0.975100**, but its +0.000980 gain did not clear the 0.002 floor. Retained
+m = 5, ASTM half cycles and no binning, cut-off or mean-stress correction. Per-file CV APE has
+median 1.65%, 90th percentile 5.77%, and worst 13.90%. The residual cause remains unresolved;
+the search plateau is not a proof that it is irreducible.
+
+**Test predictions.** 16 values in 0.029057–0.821870 (training label range 0.029–0.928).
 
 ## 7. Deliverables and reproducibility
 
 - `predictions/{door,acv,rail,shm}_predictions.csv` — produced by each subsystem's
   `code/predict.py` (`--input … --output …`), which the app also calls.
-- `<Subsystem>/model/` — the single shipped artefact per subsystem; `weights/<Subsystem>/` —
-  CV reports, cached features, candidate models.
-- `common/metrics.py` + `tests/test_metrics.py` — judge metrics with tests (6 passing).
+- `<Subsystem>/model/` — the single shipped artefact per subsystem; `weights/<Subsystem>/runs/`
+  — versioned run folders with CV reports, trial results, model backups and prediction exports.
+- `common/metrics.py`, `common/research.py` and `tests/` — judge metrics, plateau tracking,
+  fold-isolation tests, archived-score replay and all four inference CLI smoke tests.
+  Run `& ".\.venv\Scripts\python.exe" -m pytest tests -q` on Windows.
+- Use each training CLI's `--research --ship --run-id <new-id>` mode to reproduce the current
+  protocol. See the README for complete commands; never reuse an existing run directory.
 - `README.md` — full Methodology (implementation spec) and Results (all tables above with
   per-variant numbers), reproduction commands, environment.
 - Environment: Python 3.12 via `uv`, `requirements.txt`; CPU-only (an RTX 4090 was available but
@@ -195,10 +218,11 @@ cycle counting.
   rests on two independent physical axes (profile shape + switch timing) rather than CV evidence.
 - **ACV:** the pressure tie-breaker rests on one rich-format case; the test case has the common
   format, where the temperature signal is weaker than in any training case.
-- **Rail:** Side I has 14 training examples; the 0.834 macro-F1 carries ±0.014 fold noise, ~0.02
-  optimism from tuning τ on out-of-fold probabilities, and drops to 0.778 under contiguous-block
-  CV — we quote 0.75–0.85 as the honest expectation.
-- **SHM:** the residual 2.6 % MAPE is not recoverable from the disclosed information.
+- **Rail:** Side I has only 14 training examples. Nested CV is 0.8232 ± 0.0167, fresh-split
+  confirmation is 0.8037, and contiguous-block validation is 0.7654. None is an independent
+  labelled test score; repeatedly searching these files can still bias model selection.
+- **SHM:** the retained model leaves about 2.59% validation MAPE. Tested refinements did not
+  clear the improvement floor, but the remaining error is not proven irreducible.
 
 ## References
 

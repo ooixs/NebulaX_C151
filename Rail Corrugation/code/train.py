@@ -28,10 +28,10 @@ WEIGHTS = ROOT / "weights/Rail Corrugation"
 MODEL = ROOT / "Rail Corrugation/model"
 
 
-def load_all(files: list[Path], cache: Path):
+def load_all(files: list[Path], cache: Path, jobs=-1):
     if cache.exists():
         return joblib.load(cache)
-    res = Parallel(n_jobs=-1)(delayed(file_channel_table)(f) for f in files)
+    res = Parallel(n_jobs=jobs)(delayed(file_channel_table)(f) for f in files)
     joblib.dump(res, cache)
     return res
 
@@ -141,7 +141,7 @@ def research(args):
     y = lab.label.to_numpy()
     n = len(y)
     cache_path = WEIGHTS / "train_channel_tables.joblib"
-    cached = joblib.load(cache_path)
+    cached = load_all([DATA / "Train" / filename for filename in lab.filename], cache_path, jobs=args.jobs)
     if len(cached) != n:
         raise ValueError("channel cache does not match the labelled files")
     CT, V = [c for c, _ in cached], [v for _, v in cached]

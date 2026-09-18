@@ -16,7 +16,7 @@ from sklearn.ensemble import RandomForestClassifier
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from common.metrics import door_iou_f1  # noqa: E402
+from common.metrics import door_iou_f1, parse_door_time  # noqa: E402
 from Door.code.pipeline import (ReferenceProfiles, RfLrEnsemble, features_table, load_stream,  # noqa: E402
                                 match_labels, segment, segments_to_frame)
 
@@ -43,7 +43,13 @@ def make_model(kind: str, seed: int = 0):
 def run_cv(segs, labels, blocks: int, kind: str, thresholds=np.linspace(0.2, 0.8, 25),
            nested=False, answer=None):
     n = len(segs)
+    if not 2 <= blocks <= n:
+        raise ValueError("blocks must be between 2 and the number of cycles")
     fold_id = (np.arange(n) * blocks) // n  # contiguous blocks
+    truth = segments_to_frame(segs).assign(status=labels) if answer is None else answer
+    boundaries = np.array([segs[np.flatnonzero(fold_id == k)[0]]["t"].iloc[0]
+                           for k in range(1, blocks)], dtype="datetime64[ns]")
+    truth_fold_id = np.searchsorted(boundaries, truth.start_time.map(parse_door_time).to_numpy(), side="right")
     oof = np.zeros(n)
     pred_b = np.zeros(n, dtype=bool)
     fold_reports = []
@@ -59,14 +65,14 @@ def run_cv(segs, labels, blocks: int, kind: str, thresholds=np.linspace(0.2, 0.8
         oof[te] = clf.predict_proba(Xte)[:, 1]
         report = dict(fold=k, n_test=int(te.sum()), n_pos_test=int(sum(y == POS for y, m in zip(labels, te) if m)))
         if nested:
-            inner = run_cv(train_segs, train_labels, max(2, blocks - 1), kind, thresholds)
+            inner = run_cv(train_segs, train_labels, max(2, blocks - 1), kind, thresholds,
+                           answer=truth.loc[truth_fold_id != k])
             report["threshold"] = inner["threshold"]
             report["threshold_training_indices"] = np.flatnonzero(tr).tolist()
             report["validation_indices"] = np.flatnonzero(te).tolist()
             pred_b[te] = oof[te] >= inner["threshold"]
         fold_reports.append(report)
     # pick threshold on OOF end-to-end IoU-F1; among equally good thresholds take the centre of the interval
-    truth = segments_to_frame(segs).assign(status=labels) if answer is None else answer
     scores = []
     for th in thresholds:
         pred = segments_to_frame(segs, [POS if p >= th else "Normal" for p in oof])
@@ -79,7 +85,7 @@ def run_cv(segs, labels, blocks: int, kind: str, thresholds=np.linspace(0.2, 0.8
     # per-fold end-to-end score at the chosen threshold
     for r in fold_reports:
         m = fold_id == r["fold"]
-        t_f = segments_to_frame([s for s, mm in zip(segs, m) if mm]).assign(status=[y for y, mm in zip(labels, m) if mm])
+        t_f = truth.loc[truth_fold_id == r["fold"]]
         p_f = segments_to_frame([s for s, mm in zip(segs, m) if mm], [POS if p else "Normal" for p in pred_b[m]])
         r["iou_f1"] = door_iou_f1(t_f, p_f)["score"]
     prediction = segments_to_frame(segs, [POS if p else "Normal" for p in pred_b])
@@ -107,7 +113,8 @@ def research(args):
     for kind in ("ens", "rf", "lgbm"):
         report = run_cv(segs, labels, args.blocks, kind, np.linspace(0.05, 0.95, 91), nested=True, answer=answer)
         run.save_json(f"cv_{kind}.json", report)
-        result = run.record(kind, [fold["iou_f1"] for fold in report["folds"]],
+        result = run.record(kind, [report["oof_iou_f1"]],
+                            per_fold_iou_f1=[fold["iou_f1"] for fold in report["folds"]],
                             end_to_end_iou_f1=report["oof_iou_f1"], segmentation_iou_f1=segmentation)
         if result["accepted"]:
             best = report

@@ -66,7 +66,11 @@ def research(args):
     lab = pd.read_csv(DATA / "Train_Labels.csv")
     D = lab.damage.to_numpy()
     cache = WEIGHTS / "train_cycles.joblib"
-    cyc = joblib.load(cache)
+    if cache.exists():
+        cyc = joblib.load(cache)
+    else:
+        cyc = Parallel(n_jobs=args.jobs)(delayed(lambda f: cycles(load_series(DATA / "Train" / f)))(f) for f in lab.filename)
+        joblib.dump(cyc, cache)
     if len(cyc) != len(D):
         raise ValueError("cycle cache does not match the labelled files")
     checked = sorted({0, len(D) // 2, len(D) - 1})
@@ -82,14 +86,16 @@ def research(args):
     key = lambda cfg: json.dumps(cfg, sort_keys=True)
     columns = {}
     old_configs = list(config_grid())
-    old_S = np.load(WEIGHTS / "S_matrix.npy", allow_pickle=False)
-    if old_S.shape != (len(D), len(old_configs)):
-        raise ValueError("S-matrix cache does not match the configuration grid")
-    for j, cfg in enumerate(old_configs):
-        columns[key({**base, **cfg})] = old_S[:, j]
+    if (WEIGHTS / "S_matrix.npy").exists():
+        old_S = np.load(WEIGHTS / "S_matrix.npy", allow_pickle=False)
+        if old_S.shape != (len(D), len(old_configs)):
+            raise ValueError("S-matrix cache does not match the configuration grid")
+        for j, cfg in enumerate(old_configs):
+            columns[key({**base, **cfg})] = old_S[:, j]
     s5 = np.array([damage_sum(c, 5.0) for c in cyc])
-    if not np.allclose(s5, columns[key(base)], rtol=1e-12):
+    if key(base) in columns and not np.allclose(s5, columns[key(base)], rtol=1e-12):
         raise ValueError("stale S-matrix cache; rebuild before research")
+    columns.setdefault(key(base), s5)
     splits = [(seed, tr, te) for seed in range(args.repeats)
               for tr, te in KFold(args.folds, shuffle=True, random_state=seed).split(D)]
     def legacy_C(S, y):

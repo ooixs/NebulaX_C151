@@ -419,11 +419,72 @@ features with `objective="regression_l1"` and sample weights `1/D`, target `D`.
 
 ## Results
 
-Reproduce any row with the `train.py` in that subsystem's `code/` folder (uses `.venv`; see
-Environment). CV artefacts land in `weights/<Subsystem>/`, the shipped model in
-`<Subsystem>/model/`, and test predictions in `predictions/`.
+### Current validated run — 18 September 2026
 
-### Door
+All four models were retrained under run ID `2026-09-18-autoresearch`. Model selection used
+training data only; test CSVs were regenerated after the models were fixed.
+
+| Subsystem | Validation used in this run | Retained score | Stopping reason |
+|---|---|---|---|
+| Door | 5 contiguous time blocks; thresholds selected by inner blocked CV | IoU-F1 **1.000000** in every outer fold | Metric ceiling |
+| ACV | 6 leave-one-case-out cases; fixed physics weights, fold-local healthy-response fitting | Rank-decay **1.000000** | Metric ceiling |
+| Rail Corrugation | 5-fold × 3 repeats; references and threshold calibration nested inside each outer training fold | Macro F1 **0.823227 ± 0.016735** | 5 consecutive non-improving challengers |
+| SHM | 8-fold × 3 seeds; convention and scale selection confined to training files | 1 − MAPE **0.974120 ± 0.000252** | 5 consecutive non-improving candidate families |
+
+These are validation estimates, not independent test scores. The standard deviations describe
+variation between CV repeats, not confidence intervals. In particular, ACV has only six cases,
+and its fixed pressure rule was previously developed using the single rich-format case.
+
+**Stopping rule.** A candidate must improve the incumbent mean by more than the larger of its
+CV standard deviation and a practical floor: 0.005 for Rail, 0.002 for SHM. Five consecutive
+failures stop the search; a score of 1.0 stops it immediately. Small gains do not automatically
+justify extra parameters, and this stopping rule does not establish a global optimum.
+
+**Rail.** Retained the original 800-tree per-side ExtraTrees architecture. New ratio/side-identity
+features, paired-channel contrasts, compact physical features, compact RF, and compact RBF-SVM
+all failed the acceptance rule. Fresh nested splits (seed 2026, two repeats) scored **0.803706**;
+contiguous-file block validation scored **0.765362**. The same saved probabilities reproduce the
+old **0.833610** score when thresholds are tuned and scored on those same OOF predictions: the
+lower current estimate reflects corrected validation, not evidence of a worse classifier.
+The final all-training-data threshold is 0.25.
+
+**SHM.** Corrected the MAPE-optimal scale: the weighted median of `S_m / D` needs weights
+`S_m / D`, not `1/D`. On identical folds this raised the baseline from **0.973615** to
+**0.974120**. Range-bin counts, finer bin counts, alternative bin centres, fine S-N exponents,
+and residue conventions were tested. The best challenger, fine exponents, reached **0.975100**:
+its +0.000980 gain is below the predeclared 0.002 floor. Retained `m = 5`, ASTM half cycles,
+no binning/cut-off/mean-stress correction, and refitted `C = 735168784.8379046`.
+
+**Artefacts.** Each `weights/<Subsystem>/runs/2026-09-18-autoresearch/` contains the trial log,
+summary, configuration/version manifest, final model and prediction CSV. `before/` preserves the
+previous models and reports. Rail additionally saves OOF predictions, nested split indices,
+confirmation/block checks and fold feature tables; SHM saves per-trial damage matrices and OOF
+predictions. Older top-level `weights/<Subsystem>/cv_*.json` reports remain historical records.
+The retained model is copied to `<Subsystem>/model/`. Door, ACV and Rail prediction CSVs are
+unchanged; SHM predictions were refreshed after recalibration (range 0.029057–0.821870).
+
+Reproduce with a **new** run ID; existing run directories are never overwritten:
+
+```powershell
+$py = ".\.venv\Scripts\python.exe"
+$run = Get-Date -Format "yyyyMMdd-HHmmss"
+& $py "Door/code/train.py" --research --ship --run-id $run
+& $py "ACV/code/train.py" --research --ship --run-id $run
+& $py "Rail Corrugation/code/train.py" --research --ship --run-id $run --jobs 8
+& $py "SHM/code/train.py" --research --ship --run-id $run --jobs 6
+& $py -m pytest tests -q
+```
+
+Omit `--ship` to keep candidate artefacts without updating the models used by inference. Rail
+and SHM build missing feature caches from raw training files; reused caches are fingerprinted
+and sample-checked against raw files. Rebuild caches when training data or feature extraction
+changes. Generate CSVs with the existing `predict.py --input ... --output ...` interfaces only
+after selection.
+Tests cover MAPE calibration, fold isolation, stopping rules, archived-score replay, model/export
+consistency, full prediction coverage, and all four prediction CLIs. Use `--research` for the
+current validation protocol; the older exploratory scripts and tables below are historical.
+
+### Earlier Door experiments
 
 **Segmentation.** Inter-row Δt within a cycle is a constant 20 ms; between cycles it is 10–59 s.
 Cutting at Δt > 1 s reproduces all 110 labelled cycles exactly — **segmentation-only IoU-F1 =
@@ -485,7 +546,7 @@ physical axes, not on profile-shape reasoning alone.
 **Test predictions.** `predictions/door_predictions.csv`: 38 rows, 30 Normal / 8 Abnormal
 resistance (3 Open at 335–378 mA, 5 Close at 441–542 mA).
 
-### ACV
+### Earlier ACV experiments
 
 **Loading.** Header regex `Car (\d{2}) - (.+)` + keyword role mapping handles both formats: the
 8-parameter files (`Indoor Average Temperature`, `ACV Control Temperature (Cooling)`, `ACV Running
@@ -540,7 +601,7 @@ peers is +0.46 to +1.31 °C while all healthy cars sit within ±0.35 °C.
 every indicator (mean deviation +0.105 °C, p90 +1.0 °C, longest run above +1 °C = 36 samples =
 18 min, highest setpoint error) but the margin is smaller than in any training case.
 
-### Rail Corrugation
+### Earlier Rail Corrugation experiments
 
 **Speed decode.** The pulse train has symmetric high/low run lengths, so each tooth produces two
 transitions: `v = transitions / 180 · π · 0.85 m/s`. Speeds span 0–19.5 m/s. **Every fault file
@@ -586,7 +647,7 @@ went from 2/14 (3-class) to 10/14.
 | 10 | ET min_samples_leaf 2 | 0.821 |
 | 11 | ET 2000 trees | 0.829 |
 | 12 | ET + RF average | 0.828 |
-| 13 | ET + side-mirroring augmentation | 0.784 |
+| 13 | Legacy row-swapping experiment (incorrect label alignment; invalid comparison) | 0.784 |
 
 | 14 | ET rerun (reference for phase 3) | 0.834 ± 0.014 |
 | 15 | Per-side thresholds (τ₁, τ₂) | 0.840 ± 0.011 |
@@ -596,12 +657,13 @@ went from 2/14 (3-class) to 10/14.
 | 19 | Windows + per-side thresholds | 0.797 |
 | 20 | (File + window probabilities)/2 + per-side thresholds | 0.825 |
 
-Variants 9–13 and again 15–20 fail the acceptance rule (> baseline + 1 std = 0.848); the best
+Variants 9–12 and 15–20 fail the historical acceptance rule (> baseline + 1 std = 0.848); the best
 Side I-targeted idea (per-side thresholds, +0.007) is within fold noise, and window augmentation
-*hurts* — halving the spectral record costs more than doubling the sample count gains. Findings
-worth keeping: (a) ablations confirm both halves of the feature design — dropping cross-rail
-features costs 5.5 points, dropping own-side features 15; (b) **side-mirroring augmentation
-hurts** (−5 points), so the sides are not symmetric enough to swap.
+*hurts* — halving the spectral record costs more than doubling the sample count gains. Ablations
+support retaining both feature groups: dropping cross-rail features costs 5.5 points, dropping
+own-side features 15. The legacy mirroring experiment swapped rows without consistently swapping
+their binary labels; its degradation does **not** establish physical side asymmetry. That
+experiment is not used by the current `--research` pipeline.
 
 **Adjacency-leakage check** (`notebooks/leakage_check.py`). File numbers may encode acquisition
 order, so a 5-fold CV over *contiguous file-number blocks* was run as a stress test:
@@ -614,14 +676,14 @@ some may be genuine adjacency correlation. Honest held-out expectation is theref
 **Test predictions.** `predictions/rail_predictions.csv`: 57 Normal / 5 Side I / 6 Side II
 (training prior implies ≈ 3.5 / 6 of 68).
 
-### SHM
+### Earlier SHM experiments
 
 **Data.** 64 train + 16 test files, each a single stress channel of 581,120 samples (values
 roughly −20…+40, ~180 k rainflow cycles per file, ≤ 26 residue half-cycles). Labels 0.029–0.928.
 
 **Model.** ASTM E1049 rainflow (`rainflow.extract_cycles`) → `S_m = Σ countᵢ · (rangeᵢ/2)^m` →
 `D̂ = S_m / C`. `C` has a closed-form MAPE-optimal solution (weighted median of `S_m / D` with
-weights `S_m / D`). The SHM scores below predate this calibration correction and await revalidation.
+weights `S_m / D`). The historical scores below used the earlier scale fit; the corrected rerun is summarised above.
 A grid of 1,968 conventions — `m` ∈ 3.0…7.0 step 0.1, residue as half / full /
 dropped cycles, endurance cut-off ∈ {0, 0.5, 1, 2}, Goodman mean-stress correction with
 σ_u ∈ {none, 100, 200, 400} — was scored by MAPE, selecting the simplest configuration within
@@ -654,13 +716,12 @@ uncorrelated with damage level, cycle count or max range and only weakly with se
 | 6 | m on a 0.05 grid (4.5–5.5) per fold | 0.9723 |
 | 7 | Power-law calibration D = a·S^b, MAPE-fitted | 0.9747 |
 
-Best gain is +0.0011 for two extra parameters — not significant on 64 files (stop rule met after
-seven consecutive non-significant results). The one-parameter m = 5 model is kept; the residual
-~2.5 % is most likely a difference in the reference implementation's cycle-counting details that
-is not recoverable from the disclosed information.
+The earlier best gain was +0.0011 for two extra parameters, below the practical improvement
+floor, so the one-parameter m = 5 model was kept. The residual cause was not established;
+this is not evidence that further improvement is impossible. See the corrected rerun above.
 
-**Test predictions.** `predictions/shm_predictions.csv`: 16 values in 0.029–0.818 (training label
-range 0.029–0.928).
+**Earlier test predictions.** 16 values in 0.029–0.818. The current recalibrated
+`predictions/shm_predictions.csv` ranges from 0.029057 to 0.821870 (training label range 0.029–0.928).
 
 ### References (implementation pointers)
 
