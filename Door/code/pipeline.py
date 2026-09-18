@@ -170,3 +170,25 @@ class RfLrEnsemble:
     @property
     def feature_importances_(self):
         return self.rf.feature_importances_
+
+
+class DoorPipeline:
+    """End-to-end inference pipeline for Door abnormal resistance detection."""
+    def __init__(self, feature_columns: list[str], model: Any, threshold: float = 0.35):
+        self.feature_columns = feature_columns
+        self.model = model
+        self.threshold = threshold
+
+    def predict_proba(self, df_features: pd.DataFrame) -> np.ndarray:
+        X = df_features[self.feature_columns].values
+        return self.model.predict_proba(X)[:, 1]
+
+    def predict(self, df_features: pd.DataFrame) -> list[str]:
+        probs = self.predict_proba(df_features)
+        preds = []
+        for p in probs:
+            if p >= self.threshold:
+                preds.append("Abnormal resistance")
+            else:
+                preds.append("Normal")
+        return preds

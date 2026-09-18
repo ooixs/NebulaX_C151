@@ -184,3 +184,89 @@ def _longest_run(mask: np.ndarray) -> int:
         run = run + 1 if v else 0
         best = max(best, run)
     return int(best)
+
+
+class ACVPipeline:
+    """
+    Thermodynamic Condition Monitoring & Fault Localisation Pipeline for ACV.
+    Ranks cars in a train consist from most to least likely to suffer from refrigerant leakage.
+    """
+
+    def __init__(self, w_cool_err=1.0, w_fleet_rel=0.5, w_pressure=10.0, w_persistence=0.2):
+        self.w_cool_err = float(w_cool_err)
+        self.w_fleet_rel = float(w_fleet_rel)
+        self.w_pressure = float(w_pressure)
+        self.w_persistence = float(w_persistence)
+        self.is_fitted = True
+
+    def compute_anomaly_score(self, feat_dict: dict) -> float:
+        if feat_dict.get("is_active", 1) == 0:
+            return -999.0
+
+        cool_err = feat_dict.get("tracking_error_cool", 0.0)
+        rel_err = feat_dict.get("fleet_rel_err", 0.0)
+        p_drop = feat_dict.get("pressure_asymmetry", 0.0)
+        persistence = feat_dict.get("persistence_over_setpoint", 0.0)
+
+        score = (
+            self.w_cool_err * cool_err
+            + self.w_fleet_rel * rel_err
+            + self.w_pressure * p_drop
+            + self.w_persistence * persistence
+        )
+        return float(score)
+
+    def predict_file(self, file_path_or_df) -> dict:
+        try:
+            from ACV.code.features import extract_acv_features
+        except ImportError:
+            from features import extract_acv_features
+
+        res = extract_acv_features(file_path_or_df)
+        active_cars = res["active_cars"]
+        all_cars = res["all_cars"]
+        car_features = res["car_features"]
+        time_series = res["time_series"]
+
+        for c in all_cars:
+            if c in active_cars:
+                car_features[c]["final_score"] = self.compute_anomaly_score(car_features[c])
+            else:
+                car_features[c]["final_score"] = -999.0
+
+        ranked_active = sorted(active_cars, key=lambda c: car_features[c]["final_score"], reverse=True)
+        inactive_cars = [c for c in all_cars if c not in active_cars]
+        final_ranked = ranked_active + inactive_cars
+
+        ranked_str = "|".join(final_ranked)
+        top_car = final_ranked[0] if final_ranked else "01"
+
+        return {
+            "ranked_cars": ranked_str,
+            "top_faulty_car": top_car,
+            "active_cars": active_cars,
+            "all_cars": all_cars,
+            "car_features": car_features,
+            "time_series": time_series
+        }
+
+    def predict_batch(self, input_path: str) -> pd.DataFrame:
+        input_path = str(input_path)
+        if os.path.isfile(input_path):
+            files = [input_path]
+        elif os.path.isdir(input_path):
+            import glob
+            files = sorted(glob.glob(os.path.join(input_path, "*.xlsx")))
+        else:
+            raise FileNotFoundError(f"Path does not exist: {input_path}")
+
+        records = []
+        for f in files:
+            file_id = os.path.basename(f)
+            diag = self.predict_file(f)
+            records.append({
+                "file_id": file_id,
+                "ranked_cars": diag["ranked_cars"]
+            })
+
+        return pd.DataFrame(records)

@@ -89,3 +89,43 @@ class DamageModel:
     @classmethod
     def from_dict(cls, d: dict) -> "DamageModel":
         return cls(**d)
+
+
+CORE_FEATURES = [
+    "log_rf_energy_range_m_4.25",
+    "log_rf_energy_range_m_3.5",
+    "log_rf_energy_range_m_3.0",
+    "log_rf_goodman_su_600_m_3.5",
+    "p95_p05",
+    "p99_p01",
+    "std",
+    "ptp",
+    "rf_p95_range",
+    "p01",
+    "crest_factor",
+    "spec_alpha2",
+    "spec_zero_crossing",
+]
+
+
+class SHMPipeline:
+    """End-to-end inference pipeline for SHM cumulative fatigue damage."""
+    def __init__(self, features: list[str], scaler: Any, models: dict[str, Any], weights: dict[str, float]):
+        self.features = features
+        self.scaler = scaler
+        self.models = models
+        self.weights = weights
+
+    def predict(self, df_features: pd.DataFrame) -> np.ndarray:
+        X = df_features[self.features].values
+        X_scaled = self.scaler.transform(X)
+
+        preds = np.zeros(len(df_features), dtype=np.float64)
+        for name, model in self.models.items():
+            w = self.weights.get(name, 0.0)
+            if w > 0:
+                pred_log = model.predict(X_scaled)
+                pred_val = np.exp(pred_log)
+                preds += w * pred_val
+
+        return np.clip(preds, 0.001, 1.5)

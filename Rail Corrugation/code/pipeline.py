@@ -202,3 +202,41 @@ def side_relative_rows(feats: dict, engineered: bool = False) -> list[dict]:
                 r[f"ratio_{base}"] = (a - b) / (abs(a) + abs(b) + 1e-9)
         rows.append(r)
     return rows
+
+
+class RailPipeline:
+    """End-to-end inference pipeline for Rail Corrugation 3-Class Detection & Localization."""
+
+    def __init__(
+        self,
+        feature_columns: list[str],
+        models: list[Any],
+        class_names: list[str] = None,
+        alpha: float = 1.05,
+        beta: float = 0.80
+    ):
+        self.feature_columns = feature_columns
+        self.models = models
+        self.class_names = class_names if class_names is not None else ["Normal", "Side I", "Side II"]
+        self.alpha = alpha
+        self.beta = beta
+
+    def predict_proba(self, df_features: pd.DataFrame) -> np.ndarray:
+        X = df_features[self.feature_columns].values
+        n_samples = len(df_features)
+        total_probs = np.zeros((n_samples, len(self.class_names)), dtype=np.float64)
+
+        for model in self.models:
+            probs = model.predict_proba(X)
+            total_probs += probs
+
+        avg_probs = total_probs / len(self.models)
+        return avg_probs
+
+    def predict(self, df_features: pd.DataFrame) -> list[str]:
+        probs = self.predict_proba(df_features).copy()
+        probs[:, 1] *= self.alpha
+        probs[:, 2] *= self.beta
+
+        best_idx = np.argmax(probs, axis=1)
+        return [self.class_names[idx] for idx in best_idx]
