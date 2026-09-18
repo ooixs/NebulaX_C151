@@ -138,7 +138,8 @@ class ContractTests(unittest.TestCase):
         calls = []
         def predict(name, path):
             calls.append(name)
-            self.assertEqual((path / 'Test1.csv').read_bytes(), b'sensor data')
+            self.assertEqual(path.name, 'Test1.csv')
+            self.assertEqual(path.read_bytes(), b'sensor data')
             return Frame(rows)
         stub = types.ModuleType('common.inference')
         stub.predict = predict
@@ -192,6 +193,38 @@ class ContractTests(unittest.TestCase):
                 server.analyze('rail', [('a.csv', b'1')])
         self.assertEqual(server.RUNS, {})
 
+    def test_bad_file_does_not_discard_valid_batch_results(self):
+        def predict(_, path):
+            if path.name == 'bad.csv':
+                raise ValueError('expected 129 sensor columns')
+            return Frame([{'file_id':path.name,'prediction':'Side II'}])
+        stub = types.ModuleType('common.inference')
+        stub.predict = predict
+        model = dict(ready=True, sha256='abc', artifact='rail_model.joblib', run_id='research')
+        with patch.dict('sys.modules', {'common.inference':stub}), patch.object(server, 'model_status', return_value=model):
+            run = server.analyze('rail', [('good.csv', b'good'), ('bad.csv', b'bad')])
+        self.assertEqual(run['rows'], [{'file_id':'good.csv','prediction':'Side II'}])
+        self.assertEqual(run['failures'], [{'name':'bad.csv','error':'expected 129 sensor columns'}])
+        self.assertEqual([file['status'] for file in run['files']], ['complete', 'failed'])
+        self.assertEqual(run['csv'], b'file_id,prediction\ngood.csv,Side II\n')
+
+    def test_technician_evidence_is_separate_from_official_csv(self):
+        stub = types.ModuleType('common.inference')
+        stub.predict_with_evidence = lambda _, path: (
+            Frame([{'file_id':path.name,'prediction':'Side I'}]),
+            {'files': {path.name: {
+                'speed_mps': 12.3,
+                'side_i_score': 0.8,
+                'side_ii_score': 0.2,
+                'threshold_margin': 0.08,
+            }}},
+        )
+        model = dict(ready=True, sha256='abc', artifact='rail_model.joblib', run_id='research')
+        with patch.dict('sys.modules', {'common.inference':stub}), patch.object(server, 'model_status', return_value=model):
+            run = server.analyze('rail', [('track.csv', b'data')])
+        self.assertEqual(run['evidence']['files']['track.csv']['speed_mps'], 12.3)
+        self.assertEqual(run['csv'], b'file_id,prediction\ntrack.csv,Side I\n')
+
     def test_submission_archive_exact_names_no_preview(self):
         ids = []
         for key in server.SYSTEMS:
@@ -240,7 +273,7 @@ class ContractTests(unittest.TestCase):
                 stub.predict = predict
                 with patch.dict('sys.modules', {'common.inference':stub}), patch.object(server, 'model_status', return_value={'ready':True, 'sha256':'abc'}):
                     run = server.analyze(key, [(filename, b'data')])
-                self.assertEqual(calls, [(server.SYSTEMS[key]['name'], key=='door')])
+                self.assertEqual(calls, [(server.SYSTEMS[key]['name'], True)])
                 self.assertEqual(run['csv'], Frame(rows).to_csv().encode())
 
     def test_preview_files_have_valid_schema(self):

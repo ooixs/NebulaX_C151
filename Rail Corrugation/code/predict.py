@@ -58,6 +58,28 @@ def predict(input_path: str | Path, with_proba: bool = False) -> pd.DataFrame:
     return pd.DataFrame([predict_one(f, with_proba, artifact=artifact) for f in files])
 
 
+def predict_with_evidence(input_path: str | Path) -> tuple[pd.DataFrame, dict]:
+    p = Path(input_path)
+    files = sorted(p.glob("*.csv"), key=_natural_key) if p.is_dir() else [p]
+    artifact = _artefact()
+    rows, evidence = [], {}
+    for file in files:
+        detailed = predict_one(file, with_proba=True, artifact=artifact)
+        row = {"file_id": detailed["file_id"], "prediction": detailed["prediction"]}
+        rows.append(row)
+        side_i = float(detailed["p_Side I"])
+        side_ii = float(detailed["p_Side II"])
+        threshold = float(artifact.get("tau", 0.0)) if artifact["choice"] == "side_detector" else None
+        evidence[file.name] = {
+            "speed_mps": round(float(detailed["speed_mps"]), 3),
+            "side_i_score": round(side_i, 6),
+            "side_ii_score": round(side_ii, 6),
+            "decision_threshold": round(threshold, 6) if threshold is not None else None,
+            "threshold_margin": round(abs(max(side_i, side_ii) - threshold), 6) if threshold is not None else None,
+        }
+    return pd.DataFrame(rows), {"files": evidence}
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", required=True)

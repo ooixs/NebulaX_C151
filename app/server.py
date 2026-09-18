@@ -204,6 +204,45 @@ def save_run(key, rows, files, model, elapsed, preview=False, csv_content=None, 
     return run
 
 
+def failure_message(exc):
+    if isinstance(exc, (ValueError, AssertionError)) and str(exc):
+        message = str(exc).strip()
+        if len(message) <= 240 and "Traceback" not in message:
+            return message
+    return "The file does not match the expected sensor format."
+
+
+def add_batch_comparisons(key, evidence):
+    if key not in ("rail", "shm") or not evidence.get("files"):
+        return evidence
+    from common.evidence import comparison
+    files = evidence["files"]
+    if key == "rail":
+        metrics = (
+            ("Detected-side score", "", 3, lambda item: max(item["side_i_score"], item["side_ii_score"])),
+            ("Train speed", "m/s", 2, lambda item: item["speed_mps"]),
+        )
+    else:
+        metrics = (
+            ("Estimated fatigue damage", "", 6, lambda item: item["estimated_damage"]),
+            ("Stress range", "", 2, lambda item: item["stress_range"]),
+            ("Counted stress cycles", "", 1, lambda item: item["counted_cycles"]),
+        )
+    for label, unit, digits, value_of in metrics:
+        eligible = []
+        for item in files.values():
+            try:
+                eligible.append((item, value_of(item)))
+            except (KeyError, TypeError, ValueError):
+                continue
+        population = [value for _, value in eligible]
+        for item, value in eligible:
+            item.setdefault("comparisons", []).append(
+                comparison(label, value, population, unit, digits)
+            )
+    return evidence
+
+
 def analyze(key, files, context=None):
     validate_files(key, files)
     context = clean_context(context)
@@ -211,23 +250,73 @@ def analyze(key, files, context=None):
         model = model_status(key)
         if not model["ready"]:
             raise ValueError(model["message"])
-        from common.inference import predict
+        from common import inference
         started = time.perf_counter()
         with tempfile.TemporaryDirectory(prefix="nebulax-") as temporary:
             folder = Path(temporary)
             for name, content in files:
                 (folder / name).write_bytes(content)
-            source = folder / files[0][0] if key == "door" else folder
-            frame = predict(SYSTEMS[key]["name"], source)
-            rows = json.loads(frame.to_json(orient="records", double_precision=15))
-            validate_rows(key, rows, [name for name, _ in files])
+            targets = [(files[0][0], folder / files[0][0])] if key == "door" else [
+                (name, folder / name) for name, _ in files
+            ]
+            rows, exact_rows, failures, evidence = [], [], [], {}
+            successful_names = set()
+            detailed_predict = getattr(inference, "predict_with_evidence", None)
+            pending_targets = targets
+            if key != "door" and len(targets) > 1 and detailed_predict:
+                try:
+                    frame, evidence = detailed_predict(SYSTEMS[key]["name"], folder)
+                    predicted = json.loads(frame.to_json(orient="records", double_precision=15))
+                    expected_names = [name for name, _ in targets]
+                    validate_rows(key, predicted, expected_names)
+                    official_csv = frame[SYSTEMS[key]["columns"]].to_csv(index=False)
+                    exact_rows.extend(csv.DictReader(io.StringIO(official_csv)))
+                    rows.extend(predicted)
+                    successful_names.update(expected_names)
+                    pending_targets = []
+                except ImportError:
+                    raise
+                except Exception:
+                    # Fall back to isolated checks so one malformed file does not lose the batch.
+                    rows, exact_rows, evidence = [], [], {}
+                    successful_names.clear()
+            for name, source in pending_targets:
+                try:
+                    if detailed_predict:
+                        frame, details = detailed_predict(SYSTEMS[key]["name"], source)
+                    else:
+                        frame, details = inference.predict(SYSTEMS[key]["name"], source), {}
+                    predicted = json.loads(frame.to_json(orient="records", double_precision=15))
+                    validate_rows(key, predicted, None if key == "door" else [name])
+                    official_csv = frame[SYSTEMS[key]["columns"]].to_csv(index=False)
+                    exact_rows.extend(csv.DictReader(io.StringIO(official_csv)))
+                    rows.extend(predicted)
+                    successful_names.add(name)
+                    if key == "door":
+                        evidence = details
+                    else:
+                        evidence.setdefault("files", {})[name] = details.get("files", {}).get(name, details)
+                except ImportError:
+                    raise
+                except Exception as exc:  # A bad file should not discard other valid files in the batch.
+                    failures.append(dict(name=name, error=failure_message(exc)))
+            if not rows:
+                detail = failures[0]["error"] if len(failures) == 1 else "None of the files could be checked."
+                raise ValueError(detail)
         after = model_status(key)
         if not after["ready"] or any(after.get(k) != model.get(k) for k in ("sha256", "artifact", "run_id")):
             raise ValueError("The model changed while your files were being checked. Check these files again to get results from one model version.")
         # Keep the exact pandas CSV representation for submission parity.
-        run = save_run(key, rows, [dict(name=name, bytes=len(data), sha256=hashlib.sha256(data).hexdigest()) for name, data in files], model, time.perf_counter() - started,
-                       csv_content=frame[SYSTEMS[key]["columns"]].to_csv(index=False).encode("utf-8"),
-                       context=context)
+        file_records = [
+            dict(name=name, bytes=len(data), sha256=hashlib.sha256(data).hexdigest(),
+                 status="complete" if name in successful_names else "failed")
+            for name, data in files
+        ]
+        evidence = add_batch_comparisons(key, evidence)
+        run = save_run(
+            key, rows, file_records, model, time.perf_counter() - started,
+            csv_content=csv_bytes(key, exact_rows), context=context, failures=failures, evidence=evidence,
+        )
         return run
 
 

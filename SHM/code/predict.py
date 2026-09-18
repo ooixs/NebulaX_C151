@@ -16,7 +16,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-from SHM.code.pipeline import DamageModel, ResidualDamageModel, load_series  # noqa: E402
+from SHM.code.pipeline import DamageModel, ResidualDamageModel, cycles, load_series  # noqa: E402
 
 from common.artifacts import load_active_model
 
@@ -46,6 +46,25 @@ def predict(input_path: str | Path) -> pd.DataFrame:
     files = sorted(p.glob("*.csv"), key=_natural_key) if p.is_dir() else [p]
     m = _model()
     return pd.DataFrame([{"file_id": f.name, "prediction": m.predict(load_series(f))} for f in files])
+
+
+def predict_with_evidence(input_path: str | Path) -> tuple[pd.DataFrame, dict]:
+    p = Path(input_path)
+    files = sorted(p.glob("*.csv"), key=_natural_key) if p.is_dir() else [p]
+    model = _model()
+    rows, evidence = [], {}
+    for file in files:
+        series = load_series(file)
+        extracted_cycles = cycles(series)
+        prediction = model.predict_from_cycles(extracted_cycles) if isinstance(model, DamageModel) else model.predict(series)
+        rows.append({"file_id": file.name, "prediction": prediction})
+        evidence[file.name] = {
+            "estimated_damage": round(float(prediction), 12),
+            "samples": int(len(series)),
+            "counted_cycles": round(float(extracted_cycles[:, 2].sum()), 1),
+            "stress_range": round(float(series.max() - series.min()), 6),
+        }
+    return pd.DataFrame(rows), {"files": evidence}
 
 
 if __name__ == "__main__":
