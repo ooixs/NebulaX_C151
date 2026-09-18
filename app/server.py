@@ -44,19 +44,19 @@ def model_status(key):
     result = dict(system=key, ready=False, artifact=config["artifact"], run_id=None, sha256=None)
     try:
         if not manifest.exists():
-            raise ValueError("Active-model manifest missing. Restore the model and active_model.json from the trained run.")
+            raise ValueError("Model setup is incomplete. Ask the person setting up the app to add the trained model file and its active_model.json record, then check setup again.")
         record = json.loads(manifest.read_text())
         allowed = [config["artifact"]] + (["shm_model.json"] if key == "shm" else [])
         if not isinstance(record, dict) or record.get("schema_version") != 1 or record.get("file") not in allowed:
-            raise ValueError("Active-model manifest is invalid.")
+            raise ValueError("The saved model record cannot be read. Ask the person setting up the app to replace active_model.json with the record supplied with the model.")
         path = directory / record["file"]
         if path.resolve().parent != directory.resolve() or not path.is_file():
-            raise ValueError("The selected model file is missing from its model folder.")
+            raise ValueError("The trained model file is missing. Copy it into the folder shown below, then check setup again.")
         with path.open("rb") as stream:
             digest = hashlib.file_digest(stream, "sha256").hexdigest()
         if digest != record.get("sha256"):
-            raise ValueError("Model checksum mismatch. Restore the original trained artifact.")
-        result.update(ready=True, artifact=path.name, run_id=record.get("run_id"), sha256=digest, message="Artifact verified · inference dependencies checked when run")
+            raise ValueError("The model file does not match its saved record. Replace it with the original trained file, then check setup again.")
+        result.update(ready=True, artifact=path.name, run_id=record.get("run_id"), sha256=digest, message="The model file matches its saved record. Required software is checked when you start a file check.")
     except (ValueError, OSError) as exc:
         result["message"] = str(exc)
     return result
@@ -64,39 +64,39 @@ def model_status(key):
 
 def validate_files(key, files):
     if key not in SYSTEMS:
-        raise ValueError("Choose one of the four supported subsystems.")
+        raise ValueError("Choose Doors, Air conditioning, Rail condition or Structural health.")
     if not files or len(files) > 100:
         raise ValueError("Choose between 1 and 100 files.")
     if key == "door" and len(files) != 1:
-        raise ValueError("Door analysis accepts one continuous stream at a time.")
+        raise ValueError("For Doors, choose one file containing a continuous recording.")
     names = set()
     for name, content in files:
         if not name or name in (".", "..") or "/" in name or "\\" in name or any(ord(c) < 32 for c in name):
-            raise ValueError("Use plain filenames without directory paths or control characters.")
+            raise ValueError("Rename the file using a simple filename, such as Test1.csv, then add it again.")
         if name.startswith(("=", "+", "-", "@")):
             raise ValueError("Rename files starting with =, +, - or @ before uploading.")
         if name.lower() in names:
-            raise ValueError("Duplicate filenames detected. Each input needs a unique filename.")
+            raise ValueError("Two files have the same name. Remove the duplicate or rename one file before continuing.")
         names.add(name.lower())
         if Path(name).suffix != SYSTEMS[key]["extension"]:
             raise ValueError(f"{SYSTEMS[key]['name']} accepts {SYSTEMS[key]['extension']} files (lowercase extension).")
         if not content:
             raise ValueError(f"{name} is empty.")
     if sum(len(content) for _, content in files) > MAX_UPLOAD:
-        raise ValueError("This batch exceeds the 120 MB upload limit. Split it into smaller batches.")
+        raise ValueError("These files total more than 120 MB. Upload fewer files now and check the rest afterwards.")
 
 
 def validate_rows(key, rows, filenames=None):
     if not rows:
-        raise ValueError("No predictions were produced. Check the recording contains valid sensor data.")
+        raise ValueError("No results were found. Check that you selected the right train system and that the file contains sensor readings.")
     required = SYSTEMS[key]["columns"]
     for row in rows:
         if any(column not in row or row[column] is None for column in required):
-            raise ValueError("The model returned an incomplete output schema.")
+            raise ValueError("The check returned incomplete results. No submission file was saved. Ask the person maintaining the app to review the model output.")
         if key in ("door", "rail"):
             labels = ("Normal", "Abnormal resistance") if key == "door" else ("Normal", "Side I", "Side II")
             if row["prediction"] not in labels:
-                raise ValueError("The model returned an unsupported prediction label.")
+                raise ValueError("The check returned an unexpected result. No submission file was saved. Ask the person maintaining the app to review the model output.")
         if key == "door":
             def stamp(value):
                 parts = str(value).split("-")
@@ -105,20 +105,20 @@ def validate_rows(key, rows, filenames=None):
                     return datetime(y, mo, d, h, mi, s, ms * 1000)
                 return datetime.fromisoformat(str(value))
             if stamp(row["end_time"]) <= stamp(row["start_time"]):
-                raise ValueError("The model returned an invalid door-cycle time interval.")
+                raise ValueError("A door movement has an invalid start or end time. Check the recording timestamps and try again.")
         if key == "shm":
             value = float(row["prediction"])
             if not math.isfinite(value) or value < 0:
-                raise ValueError("The model returned an invalid fatigue damage value.")
+                raise ValueError("The check could not produce a valid damage estimate. Check that the first column contains numeric stress readings and try again.")
             row["prediction"] = value
         if key == "acv":
             cars = str(row["ranked_cars"]).split("|")
             if any(not re.fullmatch(r"\d{2}", c) for c in cars) or len(set(cars)) != len(cars):
-                raise ValueError("The model returned invalid or repeated car identifiers.")
+                raise ValueError("The car list contains missing, repeated or unreadable car numbers. Check the original column headings in your Excel file.")
     if key != "door" and filenames is not None:
         ids = [r["file_id"] for r in rows]
         if len(ids) != len(set(ids)) or set(ids) != set(filenames):
-            raise ValueError("Prediction filenames do not match the uploaded batch.")
+            raise ValueError("Some result filenames do not match your uploaded files. No submission file was saved. Check the files and try again.")
 
 
 def csv_bytes(key, rows):
@@ -159,7 +159,7 @@ def analyze(key, files):
             validate_rows(key, rows, [name for name, _ in files])
         after = model_status(key)
         if not after["ready"] or any(after.get(k) != model.get(k) for k in ("sha256", "artifact", "run_id")):
-            raise ValueError("The active model changed during analysis. Run the batch again.")
+            raise ValueError("The model changed while your files were being checked. Check these files again to get results from one model version.")
         # Keep the exact pandas CSV representation for submission parity.
         run = save_run(key, rows, [dict(name=name, bytes=len(data), sha256=hashlib.sha256(data).hexdigest()) for name, data in files], model, time.perf_counter() - started,
                        csv_content=frame[SYSTEMS[key]["columns"]].to_csv(index=False).encode("utf-8"))
@@ -172,14 +172,14 @@ def public_run(run):
 
 def export_zip(ids):
     if not isinstance(ids, list) or not ids or len(ids) > 40 or any(not isinstance(i, str) for i in ids):
-        raise ValueError("Select completed live runs to export.")
+        raise ValueError("Check your uploaded files before downloading a submission.")
     if len(set(ids)) != len(ids):
-        raise ValueError("Select each live run only once.")
+        raise ValueError("Select each completed check only once.")
     with RUN_LOCK:
         runs = [RUNS.get(i) for i in ids]
         saved_order = {run_id: index for index, run_id in enumerate(RUNS)}
     if any(r is None or r["preview"] for r in runs):
-        raise ValueError("Only live analyses can be included in a submission. Saved-result previews are excluded.")
+        raise ValueError("Only live checks of your uploaded files can be submitted. Example results and expired checks cannot be included. Check your files again if needed.")
     # Clock resolution can give successive batches identical timestamps.
     runs.sort(key=lambda run: (run["created"], saved_order[run["id"]]), reverse=True)
     grouped = {}
@@ -199,7 +199,7 @@ def export_zip(ids):
                         continue
                     model_hash = batch["model"]["sha256"]
                     if digest is not None and digest != model_hash:
-                        raise ValueError(f"{SYSTEMS[key]['name']} batches use different models. Rerun the full set with one active model.")
+                        raise ValueError(f"{SYSTEMS[key]['name']} results use different models. Check all files for this system again with the same model version.")
                     digest = model_hash
                     by_file.update({row["file_id"]: row for row in fresh})
                 content = csv_bytes(key, list(by_file.values()))
@@ -239,7 +239,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("Unknown subsystem.")
                 example = ROOT / "predictions" / SYSTEMS[key]["output"]
                 if not example.exists():
-                    raise ValueError("Saved predictions are unavailable in this package. Upload data to run a live analysis.")
+                    raise ValueError("No example results are included in this copy of the app. Once the model is ready, add your sensor files and select Check these files.")
                 with example.open(newline="") as stream:
                     rows = list(csv.DictReader(stream))
                 validate_rows(key, rows)
@@ -251,7 +251,7 @@ class Handler(BaseHTTPRequestHandler):
                 with RUN_LOCK:
                     run = RUNS.get(parts[2])
                 if run is None:
-                    return self.send(404, dict(error="This run has expired. Analyze the files again."))
+                    return self.send(404, dict(error="These results are no longer available. Add the original files and check them again."))
                 if parts[3] == "report":
                     return self.send(200, public_run(run), filename=f"{run['system']}_analysis_record.json")
                 filename = ("preview_" if run["preview"] else "") + SYSTEMS[run["system"]]["output"]
@@ -272,7 +272,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(403, dict(error="Requests must come from this local app."))
             size = int(self.headers.get("Content-Length", "0"))
             if size <= 0 or size > MAX_UPLOAD + 1024 * 1024:
-                return self.send(413, dict(error="Choose a nonempty batch under 120 MB."))
+                return self.send(413, dict(error="Add files containing sensor readings. Their combined size must be no more than 120 MB."))
             body = self.rfile.read(size)
             if self.path == "/api/export":
                 request = json.loads(body)
@@ -294,10 +294,10 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, KeyError, TypeError, OSError) as exc:
             self.send(400, dict(error=str(exc)))
         except ImportError as exc:
-            self.send(503, dict(error=f"An inference dependency is missing: {exc.name}. Install the repository requirements in your Python environment, then restart the app."))
+            self.send(503, dict(error=f"The app needs additional software ({exc.name}) to check these files. Ask the person setting up the app to install the packages listed in requirements.txt, then restart the app."))
         except Exception:
             logging.exception("Analysis failed")
-            self.send(422, dict(error="The model could not read this recording. Check the subsystem, column layout and data format against the input guide. Technical details are in the server terminal."))
+            self.send(422, dict(error="This recording could not be checked. Confirm that you chose the right train system and followed the file format in How to use this app. If it still fails, ask the person maintaining the app to review the error in the terminal."))
 
 
 def main():
