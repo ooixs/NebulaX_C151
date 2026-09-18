@@ -18,8 +18,7 @@ from sklearn.model_selection import RepeatedStratifiedKFold
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "Rail Corrugation"))
-from code.pipeline import (CLASSES, NormalReference, aggregate, file_channel_table,  # noqa: E402
+from rail_corrugation.pipeline import (CLASSES, NormalReference, aggregate, file_channel_table,  # noqa: E402
                            side_relative_rows)
 from common.metrics import rail_macro_f1  # noqa: E402
 
@@ -399,7 +398,9 @@ def main():
     det = make_detector(0).fit(R, ys)
     art = dict(choice=choice, ref=ref, clf=clf, clf_cols=cols, det=det, det_cols=list(R.columns), tau=tau,
                cv_macro_f1=summary[choice if choice in summary else "baseline_argmax"][0])
-    joblib.dump(art, WEIGHTS / "rail_artefact.joblib"); joblib.dump(art, MODEL / "rail_model.joblib")
+    from common.artifacts import publish_model
+    joblib.dump(art, WEIGHTS / "rail_artefact.joblib")
+    publish_model(WEIGHTS / "rail_artefact.joblib", MODEL / "rail_model.joblib")
     print("saved", MODEL / "rail_model.joblib")
 
 

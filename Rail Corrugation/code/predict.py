@@ -9,32 +9,27 @@ import re
 import sys
 from pathlib import Path
 
-import joblib
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[2]
-for p in (str(ROOT), str(ROOT / "Rail Corrugation")):
-    if p not in sys.path:
-        sys.path.insert(0, p)
-from code.pipeline import CLASSES, aggregate, file_channel_table, side_relative_rows  # noqa: E402
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from rail_corrugation.pipeline import CLASSES, aggregate, file_channel_table, side_relative_rows  # noqa: E402
+from common.artifacts import load_active_model, load_rail_model
 
 MODEL_PATH = ROOT / "Rail Corrugation/model/rail_model.joblib"
-_ART = None
 
 
 def _artefact():
-    global _ART
-    if _ART is None:
-        _ART = joblib.load(MODEL_PATH)
-    return _ART
+    return load_active_model(MODEL_PATH.parent, (MODEL_PATH.name,), load_rail_model)
 
 
 def _natural_key(p: Path):
     return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", p.name)]
 
 
-def predict_one(path: Path, with_proba: bool = False):
-    art = _artefact()
+def predict_one(path: Path, with_proba: bool = False, *, artifact=None):
+    art = _artefact() if artifact is None else artifact
     ct, v = file_channel_table(path)
     engineered = art.get("engineered_features", False)
     feats = aggregate(art["ref"].excess(ct, v), v, paired=engineered)
@@ -58,7 +53,8 @@ def predict_one(path: Path, with_proba: bool = False):
 def predict(input_path: str | Path, with_proba: bool = False) -> pd.DataFrame:
     p = Path(input_path)
     files = sorted(p.glob("*.csv"), key=_natural_key) if p.is_dir() else [p]
-    return pd.DataFrame([predict_one(f, with_proba) for f in files])
+    artifact = _artefact()
+    return pd.DataFrame([predict_one(f, with_proba, artifact=artifact) for f in files])
 
 
 if __name__ == "__main__":

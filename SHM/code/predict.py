@@ -18,20 +18,23 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from SHM.code.pipeline import DamageModel, ResidualDamageModel, load_series  # noqa: E402
 
+from common.artifacts import load_active_model
+
 MODEL_PATH = ROOT / "SHM/model/shm_model.json"
 RESIDUAL_MODEL_PATH = ROOT / "SHM/model/shm_model.joblib"
-_M = None
+
+
+def _read_model(path):
+    if path.suffix == ".joblib":
+        art = joblib.load(path)
+        if art.get("kind") != "physics_plus_residual":
+            raise ValueError("unsupported SHM joblib model format")
+        return ResidualDamageModel(art["base"], art["feature_names"], art["scaler"], art["model"])
+    return DamageModel.from_dict(json.loads(path.read_text(encoding="utf-8")))
 
 
 def _model():
-    global _M
-    if _M is None:
-        if RESIDUAL_MODEL_PATH.exists():
-            art = joblib.load(RESIDUAL_MODEL_PATH)
-            _M = ResidualDamageModel(art["base"], art["feature_names"], art["scaler"], art["model"])
-        else:
-            _M = DamageModel.from_dict(json.loads(MODEL_PATH.read_text()))
-    return _M
+    return load_active_model(MODEL_PATH.parent, (MODEL_PATH.name, RESIDUAL_MODEL_PATH.name), _read_model)
 
 
 def _natural_key(p: Path):

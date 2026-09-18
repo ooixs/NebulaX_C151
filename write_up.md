@@ -202,7 +202,8 @@ calibrations failed, but **S₅/C plus a Huber(α=1) log-residual on 32 such fea
 **0.979701 ± 0.001083** and passed a fresh-seed confirmation (0.980676 vs 0.974258 physics-only,
 better in every repeat, gain +0.0064 > the 0.002 floor). Per-file CV APE: median 1.39%, p90
 4.82%, worst 7.78%. Shipped as `SHM/model/shm_model.joblib`; the physics-only JSON model remains
-in the run archive and `predict.py` falls back to it when no joblib is present.
+in the run archive. Both formats are supported; `active_model.json` explicitly selects the
+artifact rather than giving a joblib file implicit precedence over a JSON file.
 
 **Test predictions.** 16 values in 0.027894–0.823098 (training label range 0.029–0.928).
 
@@ -210,8 +211,12 @@ in the run archive and `predict.py` falls back to it when no joblib is present.
 
 - `predictions/{door,acv,rail,shm}_predictions.csv` — produced by each subsystem's
   `code/predict.py` (`--input … --output …`), which the app also calls.
-- `<Subsystem>/model/` — the single shipped artefact per subsystem; `weights/<Subsystem>/runs/`
-  — versioned run folders with CV reports, trial results, model backups and prediction exports.
+- `<Subsystem>/model/` — selected artefact plus `active_model.json` (filename, SHA-256 and run ID);
+  only the selected artefact is packaged. `weights/<Subsystem>/runs/` contains versioned CV
+  reports, trial results, model backups and prediction exports.
+- `common/inference.py` — shared backend for all four subsystems, tested together in one process.
+  Rail uses a collision-free `rail_corrugation` namespace with a legacy checkpoint reader.
+  Packaged app/optional-code predictors and CSV exports are covered by integration parity tests.
 - `common/metrics.py`, `common/research.py` and `tests/` — judge metrics, plateau tracking,
   fold-isolation tests, archived-score replay and all four inference CLI smoke tests.
   Run `& ".\.venv\Scripts\python.exe" -m pytest tests -q` on Windows.

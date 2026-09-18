@@ -8,7 +8,7 @@ import pandas as pd
 from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT)); sys.path.insert(0, str(ROOT / "Rail Corrugation"))
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "Rail Corrugation/notebooks"))
 import autoresearch as ar  # noqa: E402  (reuses folds, caches, run())
 

@@ -12,9 +12,9 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT)); sys.path.insert(0, str(ROOT / "Rail Corrugation"))
-from code.pipeline import CLASSES, NormalReference, aggregate, side_relative_rows  # noqa: E402
-from code.train import decode_side  # noqa: E402
+sys.path.insert(0, str(ROOT))
+from rail_corrugation.pipeline import CLASSES, NormalReference, aggregate, side_relative_rows  # noqa: E402
+from rail_corrugation.train import decode_side  # noqa: E402
 from common.metrics import rail_macro_f1  # noqa: E402
 
 W = ROOT / "weights/Rail Corrugation"

@@ -179,7 +179,8 @@ def main():
     joblib.dump(artefact, WEIGHTS / f"door_{args.model}.joblib")
     print("saved", WEIGHTS / f"door_{args.model}.joblib")
     if args.ship:
-        joblib.dump(artefact, MODEL / "door_model.joblib")
+        from common.artifacts import publish_model
+        publish_model(WEIGHTS / f"door_{args.model}.joblib", MODEL / "door_model.joblib")
         print("SHIPPED ->", MODEL / "door_model.joblib")
 
 

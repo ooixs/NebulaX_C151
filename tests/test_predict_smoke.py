@@ -28,19 +28,22 @@ CASES = {
 
 
 def model_path(name: str) -> Path:
+    from common.artifacts import resolve_model
+
     path = CASES[name]["model"]
-    if name == "shm":
-        joblib_path = path.with_suffix(".joblib")
-        if joblib_path.exists():
-            return joblib_path
-    return path
+    candidates = (path.name, path.with_suffix(".joblib").name) if name == "shm" else (path.name,)
+    return resolve_model(path.parent, candidates)
 
 
 def run_cli(name: str, tmp_path: Path) -> pd.DataFrame:
     c = CASES[name]
     if not c["inp"].exists():
         pytest.skip(f"{name}: data not present")
-    if not model_path(name).exists():
+    try:
+        model_path(name)
+    except FileNotFoundError:
+        if (c["model"].parent / "active_model.json").exists():
+            raise
         pytest.skip(f"{name}: model artefact not present")
     out = tmp_path / f"{name}_predictions.csv"
     r = subprocess.run([PY, str(c["script"]), "--input", str(c["inp"]), "--output", str(out)],

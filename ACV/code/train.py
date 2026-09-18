@@ -145,7 +145,8 @@ def main():
                   ranked={n: score_cars(feats_loo[n], final_w).index.tolist() for n in names})
     (WEIGHTS / "loo_report.json").write_text(json.dumps(report, indent=1))
     joblib.dump(dict(weights=final_w, response=rm, components=COMPONENTS), WEIGHTS / "acv_scorer.joblib")
-    joblib.dump(dict(weights=final_w, response=rm, components=COMPONENTS), MODEL / "acv_model.joblib")
+    from common.artifacts import publish_model
+    publish_model(WEIGHTS / "acv_scorer.joblib", MODEL / "acv_model.joblib")
     for n in names:
         print(f"  {n}: true={labels[n]} ranked={'|'.join(report['ranked'][n])}")
     print("saved", MODEL / "acv_model.joblib")

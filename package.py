@@ -15,13 +15,23 @@ demo_video.* must be added to C151/ manually after recording.
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
+import re
 import shutil
 import zipfile
 from pathlib import Path
 
+from common.artifacts import MANIFEST, activate_model, resolve_model
+
 ROOT = Path(__file__).resolve().parent
 SUBSYSTEMS = ["Door", "ACV", "Rail Corrugation", "SHM"]
 PREDICTIONS = ["door_predictions.csv", "acv_predictions.csv", "rail_predictions.csv", "shm_predictions.csv"]
+MODEL_FILES = {
+    "Door": ("door_model.joblib",),
+    "ACV": ("acv_model.joblib",),
+    "Rail Corrugation": ("rail_model.joblib",),
+    "SHM": ("shm_model.json", "shm_model.joblib"),
+}
 IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", ".gitkeep", ".ipynb_checkpoints")
 
 
@@ -32,46 +42,68 @@ def copytree(src: Path, dst: Path) -> bool:
     return any(p.is_file() for p in dst.rglob("*"))
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--dest", default="C151")
-    dest = ROOT / ap.parse_args().dest
+def assemble(dest: Path, root: Path = ROOT):
+    root, dest = Path(root).resolve(), Path(dest).resolve()
     if dest.exists():
-        shutil.rmtree(dest)
+        raise FileExistsError(f"destination already exists; choose a new directory: {dest}")
+    if any(dest.is_relative_to(root / name) for name in ["app", "common", "rail_corrugation", *SUBSYSTEMS]):
+        raise ValueError("destination must not be inside a source directory")
+    models = {sub: resolve_model(root / sub / "model", MODEL_FILES[sub]) for sub in SUBSYSTEMS}
     dest.mkdir(parents=True)
     warnings: list[str] = []
 
+    def copy_model(subsystem, destination):
+        destination.mkdir(parents=True, exist_ok=True)
+        source = models[subsystem]
+        shutil.copy2(source, destination / source.name)
+        manifest = source.parent / MANIFEST
+        if manifest.exists():
+            shutil.copy2(manifest, destination / MANIFEST)
+        else:
+            activate_model(destination / source.name)
+        resolve_model(destination, MODEL_FILES[subsystem])
+
     # --- predictions.zip (flat, only the *_predictions.csv files)
-    missing = [p for p in PREDICTIONS if not (ROOT / "predictions" / p).exists()]
+    missing = [p for p in PREDICTIONS if not (root / "predictions" / p).exists()]
     with zipfile.ZipFile(dest / "predictions.zip", "w", zipfile.ZIP_DEFLATED) as z:
         for p in PREDICTIONS:
-            f = ROOT / "predictions" / p
+            f = root / "predictions" / p
             if f.exists():
                 z.write(f, arcname=p)
     if missing:
         warnings.append(f"predictions.zip is missing: {missing}")
 
     # --- app/ (self-contained: app sources + common/ + subsystem code+model, repo-relative layout)
-    app_has_sources = copytree(ROOT / "app", dest / "app")
-    copytree(ROOT / "common", dest / "app/common")
+    app_has_sources = copytree(root / "app", dest / "app")
+    copytree(root / "common", dest / "app/common")
+    copytree(root / "rail_corrugation", dest / "app/rail_corrugation")
     for sub in SUBSYSTEMS:
-        copytree(ROOT / sub / "code", dest / "app" / sub / "code")
-        copytree(ROOT / sub / "model", dest / "app" / sub / "model")
+        copytree(root / sub / "code", dest / "app" / sub / "code")
+        copy_model(sub, dest / "app" / sub / "model")
     if not app_has_sources:
         warnings.append("app/ has no sources yet (compulsory deliverable, item 3)")
 
     # --- Optional_Items/
     opt = dest / "Optional_Items"
     opt.mkdir()
-    if (ROOT / "write_up.md").exists():
-        shutil.copy2(ROOT / "write_up.md", opt / "write_up.md")
+    copytree(root / "common", opt / "common")
+    copytree(root / "rail_corrugation", opt / "rail_corrugation")
+    if (root / "write_up.md").exists():
+        shutil.copy2(root / "write_up.md", opt / "write_up.md")
     else:
         warnings.append("write_up.md not found")
     for sub in SUBSYSTEMS:
-        if not copytree(ROOT / sub / "code", opt / sub / "code"):
+        if not copytree(root / sub / "code", opt / sub / "code"):
             warnings.append(f"Optional_Items/{sub}/code is empty")
-        if not copytree(ROOT / sub / "model", opt / sub / "model"):
-            warnings.append(f"Optional_Items/{sub}/model is empty")
+        copy_model(sub, opt / sub / "model")
+
+    requirements = root / "requirements.txt"
+    if requirements.exists():
+        names = re.findall(r"(?m)^([A-Za-z0-9][A-Za-z0-9_.-]*)", requirements.read_text(encoding="utf-8"))
+        versions = "\n".join(f"{name}=={importlib.metadata.version(name)}" for name in names) + "\n"
+        for directory in (dest / "app", opt):
+            shutil.copy2(requirements, directory / "requirements.txt")
+            (directory / "requirements-runtime.txt").write_text(versions, encoding="utf-8")
 
     if not list(dest.glob("demo_video.*")):
         warnings.append("demo_video.<mp4|mov> not present (compulsory deliverable, item 1) - record and drop it into C151/")
@@ -84,6 +116,13 @@ def main() -> None:
     print(f"total files: {n_files}")
     for w in warnings:
         print("WARNING:", w)
+    return warnings
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dest", default="C151")
+    assemble(ROOT / ap.parse_args().dest)
 
 
 if __name__ == "__main__":

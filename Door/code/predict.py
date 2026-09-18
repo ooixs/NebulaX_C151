@@ -16,15 +16,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from Door.code.pipeline import features_table, load_stream, segment, segments_to_frame  # noqa: E402
 
+from common.artifacts import load_active_model
+
 MODEL_PATH = ROOT / "Door/model/door_model.joblib"
-_ART = None
 
 
 def _artefact():
-    global _ART
-    if _ART is None:
-        _ART = joblib.load(MODEL_PATH)
-    return _ART
+    return load_active_model(MODEL_PATH.parent, (MODEL_PATH.name,), joblib.load)
 
 
 def predict(input_path: str | Path, with_confidence: bool = False) -> pd.DataFrame:

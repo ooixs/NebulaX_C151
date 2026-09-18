@@ -341,10 +341,6 @@ def research(args):
         joblib.dump(artifact, run.path / "shm_model.joblib")
         if args.ship:
             run.publish(run.path / "shm_model.joblib", MODEL / "shm_model.joblib")
-            stale = MODEL / "shm_model.json"
-            if stale.exists():
-                run.snapshot(stale)
-                stale.unlink()
         run.finish(published=args.ship, model="shm_model.joblib", champion=best["name"], champion_confirmed=True,
                    confirmation_gain=gain, legacy_cv_mean=float(np.mean(legacy_scores)),
                    validation="file-level CV; fold-local scaler/model/C fitting; fresh-seed confirmation",
@@ -436,8 +432,10 @@ def main():
                   m5_insample_mape_logC=float(mape(D, S[:, j5] / C_ls)),
                   per_file_ape=dict(zip(lab.filename, (np.abs(D - S[:, j] / final.C) / D).tolist())))
     (WEIGHTS / "cv_report.json").write_text(json.dumps(report, indent=1, default=float))
-    (MODEL / "shm_model.json").write_text(json.dumps(final.to_dict(), indent=1))
+    from common.artifacts import publish_model
+    (WEIGHTS / "shm_model.json").write_text(json.dumps(final.to_dict(), indent=1))
     joblib.dump(final.to_dict(), WEIGHTS / "shm_model.joblib")
+    publish_model(WEIGHTS / "shm_model.json", MODEL / "shm_model.json")
     print("saved", MODEL / "shm_model.json")
 
 

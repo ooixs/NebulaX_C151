@@ -16,19 +16,17 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from ACV.code.pipeline import car_features, load_case, score_cars  # noqa: E402
 
+from common.artifacts import load_active_model
+
 MODEL_PATH = ROOT / "ACV/model/acv_model.joblib"
-_ART = None
 
 
 def _artefact():
-    global _ART
-    if _ART is None:
-        _ART = joblib.load(MODEL_PATH)
-    return _ART
+    return load_active_model(MODEL_PATH.parent, (MODEL_PATH.name,), joblib.load)
 
 
-def predict_one(path: Path, with_scores: bool = False):
-    art = _artefact()
+def predict_one(path: Path, with_scores: bool = False, *, artifact=None):
+    art = _artefact() if artifact is None else artifact
     long, cars, _ = load_case(path)
     F = car_features(long, cars, art["response"])
     s = score_cars(F, art["weights"])
@@ -39,7 +37,8 @@ def predict_one(path: Path, with_scores: bool = False):
 def predict(input_path: str | Path) -> pd.DataFrame:
     p = Path(input_path)
     files = sorted(p.glob("*.xlsx")) if p.is_dir() else [p]
-    return pd.DataFrame([predict_one(f) for f in files])
+    artifact = _artefact()
+    return pd.DataFrame([predict_one(f, artifact=artifact) for f in files])
 
 
 if __name__ == "__main__":

@@ -75,12 +75,58 @@ C151/
 
 Omit any subsystem folder we did not attempt.
 
-**`python package.py`** assembles `C151/` automatically (predictions.zip with the four CSVs at the
-zip's top level, self-contained `app/` including `common/` and every `<Sub>/{code,model}`,
-`Optional_Items/` with the exact folder names) and warns about anything missing (currently: app
-sources and the demo video). **`pytest tests`** runs the metric unit tests plus an end-to-end
-smoke test of each subsystem's `predict.py` CLI against a real held-out file (schema, label
-vocabulary, timestamp format, car-id format).
+**`python package.py`** assembles a new `C151/` directory (or use `--dest <new-directory>`).
+It refuses to overwrite an existing directory. The flat predictions zip, active model artefacts,
+checksummed model manifests, shared `common/` modules and `rail_corrugation/` import bridge are
+included. Both `app/` and `Optional_Items/` contain the dependencies needed by their prediction
+CLIs. Only the selected model is packaged, not inactive checkpoints or raw/training data.
+`requirements-runtime.txt` records the installed versions of the direct project dependencies;
+`requirements.txt` is also copied. Missing app sources and demo video are still reported as
+warnings: assembling an inference bundle does not make those compulsory deliverables complete.
+
+**`pytest tests`** checks metrics, individual prediction CLIs, all four predictors sharing one
+Python process, active-model switching and integrity checks, full-test-set prediction parity,
+and packaged app/optional-code inference in isolated Python processes outside the checkout.
+Packaged CLI and shared-backend outputs are compared with existing CSV exports, and zip members
+are checked byte-for-byte. These tests exercise the inference backend, not a graphical app
+(the app UI is still a separate deliverable).
+
+### Shared inference and active models
+
+An app should call the shared backend rather than load the SG branch's bundled models:
+
+```python
+from common.inference import predict
+
+result = predict("Rail Corrugation", input_path)
+```
+
+The subsystem names are `Door`, `ACV`, `Rail Corrugation`, and `SHM`. Existing prediction CLIs
+remain supported. Rail is imported as `rail_corrugation.pipeline` / `rail_corrugation.predict`,
+not `code.pipeline`, which conflicts with Python's standard `code` module. The original
+`Rail Corrugation/code/` submission directory is unchanged. A scoped legacy joblib reader maps
+old `code.pipeline` references during loading without replacing any standard-library module
+or rewriting trained models. Joblib is pinned to the tested 1.5.3 version because that reader
+uses its numpy-aware unpickler internals. Model files must be trusted; this is not a sandbox
+for arbitrary uploaded pickle/joblib files.
+
+`<Subsystem>/model/active_model.json` selects the model by filename and SHA-256, with its research
+run ID where available. All four retained models are explicitly activated. Publishing a model
+updates this manifest atomically and preserves inactive alternatives, so switching SHM between
+physics JSON and residual joblib cannot silently leave the wrong model active. Readers reject
+missing, ambiguous or checksum-mismatched selections; caches refresh when the selected artifact
+changes. Without a manifest, exactly one legacy candidate is accepted; two candidates require
+explicit activation. One model snapshot is used throughout each batch.
+
+To activate an existing, trusted checkpoint without retraining:
+
+```powershell
+& ".\.venv\Scripts\python.exe" -m common.artifacts --activate "SHM/model/shm_model.joblib" --run-id "2026-09-18-sg-branch3"
+```
+
+Activating or republishing does not regenerate CSV exports. Regenerate them through the app
+before submission whenever weights change, then rerun the parity tests. The integration fixes
+alone do not change any retained weights or prediction values.
 
 Conventions:
 - `data/` is never committed; copy the `02_Datasets/<Subsystem>` folders from the problem-statement repo into it.
@@ -115,9 +161,10 @@ adopting a challenger over the baseline.
 5. **Interface.** `<Subsystem>/code/predict.py` exposes `predict(input_path: str | Path) ->
    pandas.DataFrame` returning the exact output schema for that subsystem. Training writes
    everything it produces (per-fold models, checkpoints, calibration grids, reference profiles,
-   CV reports) to `weights/<Subsystem>/`; only the **final, single artefact** the app needs is
-   copied to `<Subsystem>/model/` (the folder that ships in the submission) and is loaded lazily
-   by `predict`. `app/` calls `predict` and writes the CSV.
+   CV reports) to `weights/<Subsystem>/`. Publishing selects the final artefact using
+   `<Subsystem>/model/active_model.json`; inactive alternatives may remain locally, but packaging
+   includes only the selected artefact and its manifest. `predict` loads it lazily, and the app
+   calls the shared inference interface and writes the CSV.
    The same file also has an `argparse` entry point — `python predict.py --input <path> --output
    <csv>` — because the Info Kits reference a `predict.py --input/--output` CLI even though the
    top-level spec only mandates the app; the wrapper covers both readings. For Rail and SHM,
@@ -523,8 +570,8 @@ percentile spreads, spectral moments) computed with the validated rainflow. Cham
 
 The shipped artefact is now `SHM/model/shm_model.joblib` (`ResidualDamageModel`: rainflow →
 S₅/C base × exp(Huber correction) on 32 per-file features); the previous `shm_model.json` is
-preserved under the run's `before/` folder, and `predict.py` loads the JSON physics model when
-no joblib is present. `predictions/shm_predictions.csv` was regenerated (range
+preserved under the run's `before/` folder. `predict.py` supports both formats, with the active
+artifact selected explicitly by `active_model.json`. `predictions/shm_predictions.csv` was regenerated (range
 0.027894–0.823098). Caveats: the correction is fitted on 64 files; the confirmation used fresh
 splits but the same 64 files, so some selection optimism can remain; the residual model is not
 interpretable physics — the physics-only model remains available in the run archives.

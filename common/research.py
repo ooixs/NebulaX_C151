@@ -136,9 +136,11 @@ class ResearchRun:
         source, destination = Path(source), Path(destination)
         if not source.is_file():
             raise FileNotFoundError(source)
+        from common.artifacts import MANIFEST, publish_model
+
         self.snapshot(destination)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, destination)
+        self.snapshot(destination.parent / MANIFEST)
+        publish_model(source, destination, self.run_id)
 
     def finish(self, **details):
         summary = dict(subsystem=self.subsystem, run_id=self.run_id, best_name=self.best_name,
