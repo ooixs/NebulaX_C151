@@ -156,9 +156,11 @@ class ContractTests(unittest.TestCase):
         old['csv'] = b'file_id,prediction\na.csv,Normal\nb.csv,Side I\n'
         new = server.save_run('rail', [], [], {'sha256':'same'}, 0)
         new['csv'] = b'file_id,prediction\na.csv,Side II\n'
-        with zipfile.ZipFile(io.BytesIO(server.export_zip([old['id'],new['id']]))) as archive:
-            rows = list(csv.DictReader(io.StringIO(archive.read('rail_predictions.csv').decode())))
-            self.assertEqual({r['file_id']:r['prediction'] for r in rows}, {'a.csv':'Side II','b.csv':'Side I'})
+        new['created'] = old['created']
+        for ids in ([old['id'], new['id']], [new['id'], old['id']]):
+            with zipfile.ZipFile(io.BytesIO(server.export_zip(ids))) as archive:
+                rows = list(csv.DictReader(io.StringIO(archive.read('rail_predictions.csv').decode())))
+                self.assertEqual({r['file_id']:r['prediction'] for r in rows}, {'a.csv':'Side II','b.csv':'Side I'})
         new['model']['sha256'] = 'different'
         with self.assertRaisesRegex(ValueError, 'different models'):
             server.export_zip([old['id'],new['id']])

@@ -2,12 +2,20 @@
 data/**
 !data/**/.gitkeep
 
-# Trained model artefacts (large binaries) - keep the folders, not the files
+# Ignore experimental models; ship the four selected inference weights and manifests.
 Door/model/*
 ACV/model/*
 Rail Corrugation/model/*
 SHM/model/*
 !*/model/.gitkeep
+!/Door/model/door_model.joblib
+!/Door/model/active_model.json
+!/ACV/model/acv_model.joblib
+!/ACV/model/active_model.json
+!/Rail Corrugation/model/rail_model.joblib
+!/Rail Corrugation/model/active_model.json
+!/SHM/model/shm_model.joblib
+!/SHM/model/active_model.json
 
 # Training weights / checkpoints / CV fold models (large binaries) - keep the folders, not the files
 weights/**

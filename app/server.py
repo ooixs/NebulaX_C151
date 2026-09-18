@@ -177,9 +177,11 @@ def export_zip(ids):
         raise ValueError("Select each live run only once.")
     with RUN_LOCK:
         runs = [RUNS.get(i) for i in ids]
+        saved_order = {run_id: index for index, run_id in enumerate(RUNS)}
     if any(r is None or r["preview"] for r in runs):
         raise ValueError("Only live analyses can be included in a submission. Saved-result previews are excluded.")
-    runs.sort(key=lambda run: run["created"], reverse=True)
+    # Clock resolution can give successive batches identical timestamps.
+    runs.sort(key=lambda run: (run["created"], saved_order[run["id"]]), reverse=True)
     grouped = {}
     for run in runs:
         grouped.setdefault(run["system"], []).append(run)

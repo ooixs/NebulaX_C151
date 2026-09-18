@@ -23,9 +23,9 @@ python app/server.py
 
 On Windows, activate with `.venv\Scripts\activate`. Prefer the same Python and library versions used to train the serialized models; the packaging script records installed versions in `requirements-runtime.txt`.
 
-## Restore the supplied models
+## Included models
 
-The pasted attachment identifies these artifacts but **does not contain their binary weights**. They are ignored by Git and absent from this checkout. Restore each artifact and its `active_model.json` from the corresponding research run:
+The four supplied model binaries and their `active_model.json` manifests are included in the repository. The Git ignore rules explicitly allow these eight files; experimental checkpoints remain ignored. The app loads them from the subsystem folders at the repository root. Packaging copies them into the same subsystem folders **inside `C151/app/`**, alongside the inference code, so the packaged app is self-contained.
 
 | Subsystem folder | Artifact | Requested research run |
 | --- | --- | --- |
@@ -62,7 +62,7 @@ A high placing cannot be guaranteed: held-out model performance and judges' asse
 
 ## Three-minute demo
 
-Use restored models and actual held-out inputs, not saved-result previews.
+Use the included models and actual held-out inputs, not saved-result previews.
 
 - **0:00–0:25:** explain the maintenance question and four-subsystem coverage.
 - **0:25–1:15:** select a subsystem, upload data and run inference.
@@ -78,6 +78,6 @@ python3 -m unittest discover -s app/tests -v
 node --check app/static/app.js
 ```
 
-The tests cover schema checks, upload boundaries, the shared prediction interface for all four subsystems (with injected test predictors), checksum validation, model changes during inference, exact CSV export, multi-batch merging, duplicate handling and preview exclusion. These are app contract tests, not validation of the absent trained weights. Existing repository model parity tests still require the scientific dependencies, models and source datasets.
+The tests cover schema checks, upload boundaries, the shared prediction interface for all four subsystems (with injected test predictors), checksum validation, model changes during inference, exact CSV export, multi-batch merging, duplicate handling and preview exclusion. These are app contract tests. Run `python -m pytest tests -q` for real-model inference and packaged prediction parity checks; these also require the scientific dependencies and source datasets.
 
-The existing `package.py` copies this folder along with the shared inference modules and models into a self-contained submission app. Inside that packaged `app/`, run `python server.py`. The server detects either repository or packaged layout automatically. Once models/dependencies are restored, run the repository's parity tests and packaging command as documented in its README.
+Run `python package.py` from the repository root to copy this folder, the shared inference modules and the selected models into a self-contained submission app. Inside `C151/app/`, run `python server.py` using the inference environment. For a new environment, install `requirements-runtime.txt` from that folder to use the recorded library versions. The server detects either repository or packaged layout automatically. Packaging refuses to overwrite an existing directory; use `python package.py --dest C151-new` for a fresh build.
