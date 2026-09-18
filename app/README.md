@@ -34,19 +34,19 @@ The four supplied model binaries and their `active_model.json` manifests are inc
 | `Rail Corrugation/model/` | `rail_model.joblib` | `2026-09-18-autoresearch` |
 | `SHM/model/` | `shm_model.joblib` | `2026-09-18-sg-branch3` |
 
-Model registry reports a missing file, invalid manifest or checksum mismatch. Restore only trusted trained artifacts; serialized Python models execute code when loaded. If restoring an original trusted artifact without its manifest, use the existing `python -m common.artifacts --activate <artifact-path> --run-id <run-id>` command. The app deliberately requires explicit selection for every model, including SHM's alternate JSON format. Refresh model status after restoration.
+Model setup reports a missing file, invalid manifest or checksum mismatch. Restore only trusted trained artifacts; serialized Python models execute code when loaded. If restoring an original trusted artifact without its manifest, use the existing `python -m common.artifacts --activate <artifact-path> --run-id <run-id>` command. The app deliberately requires explicit selection for every model, including SHM's alternate JSON format. Select Check setup again after restoration.
 
 ## Operator workflow
 
-1. Select Door, ACV, Rail corrugation or Structural health.
+1. Select Doors, Air conditioning, Rail condition or Structural health.
 2. Drag original data files into the upload area. Door accepts one continuous stream; the others accept up to 100 files and 120 MB per batch. Split large test sets across batches.
-3. Analyze. Inspect the subsystem-specific visual, suggested maintenance check, searchable table and result CSV.
-4. Download the analysis record for input hashes, active model hash/run, timing and output evidence.
-5. Export `predictions.zip`. Live batches are combined by subsystem. Repeated filenames use their newest prediction; Door uses only the newest stream. Contributing batches must use the same model hash. The ZIP has only the official prediction CSVs at its top level.
+3. Select Check these files. Review the visual summary, What to check next, and the searchable results table. Select Download results (CSV) to save your results.
+4. Select Technical record (JSON) if you need input hashes, model version, timing and output evidence.
+5. Select Download submission, then Download ZIP file to save `predictions.zip`. Live batches are combined by subsystem. Repeated filenames use their newest prediction; Door uses only the newest stream. Contributing batches must use the same model hash. The ZIP has only the official prediction CSVs at its top level.
 
 The most recent 40 runs are kept in server memory and restored after browser refresh. They disappear when the server stops. Input uploads are placed in an isolated temporary directory and deleted after inference. Download records and exports before stopping. The server binds only to 127.0.0.1 and is intended for one operator, not shared or public hosting.
 
-“Explore saved results” reads the repository's existing `predictions/` CSVs. It does **not** run a model or verify the historic model/input provenance. These results are visibly labelled and cannot be included in a submission archive. A packaged app without these CSVs still supports live inference.
+“View example results” reads the repository's existing `predictions/` CSVs. It does **not** run a model or verify the historic model/input provenance. These results are visibly labelled and cannot be included in a submission archive. A packaged app without these CSVs still supports live inference.
 
 ## Judging alignment
 
@@ -55,7 +55,7 @@ Based on [PS3 specifications](https://github.com/aochinwen/NebulaX-Hackathon-Pro
 - **Ease of use:** one selection/upload/analyze flow, drag and drop, format guidance, actionable errors, responsive layout and direct downloads.
 - **Clarity:** Door cycle sequence and exact intervals; ACV ordered car cards; rail class distribution and side localisation; SHM comparative damage bars. Tables expose individual predictions, and full-precision export is independent of UI filters.
 - **Usefulness:** inspection suggestions tied to model outputs, explicit model limits, batch handling, session history and integrity-checked provenance.
-- **Problem fit:** all four subsystems, clear maintenance questions, model methods and validation evidence in the registry. No unsupported confidence probabilities, asset positions, remaining-life forecasts or held-out scores.
+- **Problem fit:** all four subsystems, clear maintenance questions, model methods and research scores in Model setup. No unsupported confidence probabilities, asset positions, remaining-life forecasts or held-out scores.
 - **Technical execution:** the existing shared model interface produces the official output schema. Live CSV downloads retain the predictor's CSV representation; combined exports preserve numeric strings without rounding. Preview results never enter a submission.
 
 A high placing cannot be guaranteed: held-out model performance and judges' assessments remain independent of the interface.
