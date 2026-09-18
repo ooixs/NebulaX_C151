@@ -23,10 +23,18 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+if __package__:
+    from .history import HistoryStore
+else:
+    from history import HistoryStore
+
 APP = Path(__file__).resolve().parent
 ROOT = APP if (APP / "common").is_dir() else APP.parent
 sys.path.insert(0, str(ROOT))
 MAX_UPLOAD = 120 * 1024 * 1024
+HISTORY_LIMIT = 500
+CONTEXT_FIELDS = ("asset_id", "location", "collected_at", "work_order")
+REVIEW_STATUSES = ("new", "acknowledged", "inspection_scheduled", "resolved", "false_alert")
 SYSTEMS = {
     "door": dict(name="Door", extension=".csv", artifact="door_model.joblib", output="door_predictions.csv", columns=["start_time", "end_time", "prediction"]),
     "acv": dict(name="ACV", extension=".xlsx", artifact="acv_model.joblib", output="acv_predictions.csv", columns=["file_id", "ranked_cars"]),
@@ -36,6 +44,8 @@ SYSTEMS = {
 RUNS = {}
 RUN_LOCK = threading.Lock()
 INFERENCE_LOCK = threading.Lock()
+DATA_DIR = Path(os.environ.get("NEBULAX_DATA_DIR", APP / ".nebulax"))
+STORE = HistoryStore(DATA_DIR / "history.sqlite3", HISTORY_LIMIT)
 
 
 def model_status(key):
@@ -130,20 +140,73 @@ def csv_bytes(key, rows):
     return buffer.getvalue().encode("utf-8")
 
 
-def save_run(key, rows, files, model, elapsed, preview=False, csv_content=None):
+def clean_context(context=None):
+    context = context or {}
+    if not isinstance(context, dict):
+        raise ValueError("The recording details could not be read.")
+    cleaned = {}
+    for field in CONTEXT_FIELDS:
+        value = str(context.get(field, "")).strip()
+        if len(value) > 120 or any(ord(character) < 32 for character in value):
+            raise ValueError("Recording details must use plain text and be no more than 120 characters.")
+        cleaned[field] = value
+    return cleaned
+
+
+def get_run(run_id):
+    with RUN_LOCK:
+        run = RUNS.get(run_id)
+    return run or STORE.get(run_id)
+
+
+def history_runs():
+    stored = STORE.list()
+    with RUN_LOCK:
+        session = list(RUNS.values())
+    by_id = {run["id"]: run for run in stored}
+    by_id.update({run["id"]: run for run in session})
+    return sorted(by_id.values(), key=lambda run: run["created"], reverse=True)[:HISTORY_LIMIT]
+
+
+def update_review(run_id, status, note):
+    if status not in REVIEW_STATUSES:
+        raise ValueError("Choose a valid review status.")
+    note = str(note or "").strip()
+    if len(note) > 2000 or any(ord(character) < 32 and character not in "\n\t" for character in note):
+        raise ValueError("Review notes must be no more than 2,000 characters.")
+    run = get_run(run_id)
+    if run is None or run.get("preview"):
+        raise ValueError("These results are no longer available for review.")
+    review = dict(status=status, note=note, updated=datetime.now(timezone.utc).isoformat())
+    run["review"] = review
+    STORE.update_review(run_id, review)
+    with RUN_LOCK:
+        if run_id in RUNS:
+            RUNS[run_id] = run
+    return run
+
+
+def save_run(key, rows, files, model, elapsed, preview=False, csv_content=None, context=None,
+             failures=None, evidence=None):
+    created = datetime.now(timezone.utc).isoformat()
     run = dict(id=uuid.uuid4().hex, system=key, rows=rows, files=files, model=model,
-               elapsed=round(elapsed, 3), preview=preview, created=datetime.now(timezone.utc).isoformat())
+               elapsed=round(elapsed, 3), preview=preview, created=created, sequence=time.time_ns(),
+               context=clean_context(context), failures=failures or [], evidence=evidence or {},
+               review=None if preview else dict(status="new", note="", updated=created))
     if csv_content is not None:
         run["csv"] = csv_content
     with RUN_LOCK:
         RUNS[run["id"]] = run
         while len(RUNS) > 40:
             del RUNS[next(iter(RUNS))]
+    if not preview:
+        STORE.save(run)
     return run
 
 
-def analyze(key, files):
+def analyze(key, files, context=None):
     validate_files(key, files)
+    context = clean_context(context)
     with INFERENCE_LOCK:
         model = model_status(key)
         if not model["ready"]:
@@ -163,7 +226,8 @@ def analyze(key, files):
             raise ValueError("The model changed while your files were being checked. Check these files again to get results from one model version.")
         # Keep the exact pandas CSV representation for submission parity.
         run = save_run(key, rows, [dict(name=name, bytes=len(data), sha256=hashlib.sha256(data).hexdigest()) for name, data in files], model, time.perf_counter() - started,
-                       csv_content=frame[SYSTEMS[key]["columns"]].to_csv(index=False).encode("utf-8"))
+                       csv_content=frame[SYSTEMS[key]["columns"]].to_csv(index=False).encode("utf-8"),
+                       context=context)
         return run
 
 
@@ -172,17 +236,15 @@ def public_run(run):
 
 
 def export_zip(ids):
-    if not isinstance(ids, list) or not ids or len(ids) > 40 or any(not isinstance(i, str) for i in ids):
+    if not isinstance(ids, list) or not ids or len(ids) > HISTORY_LIMIT or any(not isinstance(i, str) for i in ids):
         raise ValueError("Check your uploaded files before downloading a submission.")
     if len(set(ids)) != len(ids):
         raise ValueError("Select each completed check only once.")
-    with RUN_LOCK:
-        runs = [RUNS.get(i) for i in ids]
-        saved_order = {run_id: index for index, run_id in enumerate(RUNS)}
+    runs = [get_run(run_id) for run_id in ids]
     if any(r is None or r["preview"] for r in runs):
         raise ValueError("Only live checks of your uploaded files can be submitted. Example results and expired checks cannot be included. Check your files again if needed.")
     # Clock resolution can give successive batches identical timestamps.
-    runs.sort(key=lambda run: (run["created"], saved_order[run["id"]]), reverse=True)
+    runs.sort(key=lambda run: (run["created"], run.get("sequence", 0)), reverse=True)
     grouped = {}
     for run in runs:
         grouped.setdefault(run["system"], []).append(run)
@@ -229,8 +291,7 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path)
         try:
             if path.path == "/api/history":
-                with RUN_LOCK:
-                    history = [public_run(run) for run in reversed(list(RUNS.values()))]
+                history = [public_run(run) for run in history_runs()]
                 return self.send(200, dict(runs=history))
             if path.path == "/api/status":
                 return self.send(200, dict(models={key: model_status(key) for key in SYSTEMS}))
@@ -249,8 +310,7 @@ class Handler(BaseHTTPRequestHandler):
                 parts = path.path.strip("/").split("/")
                 if len(parts) != 4 or parts[3] not in ("csv", "report"):
                     raise ValueError("Unknown download.")
-                with RUN_LOCK:
-                    run = RUNS.get(parts[2])
+                run = get_run(parts[2])
                 if run is None:
                     return self.send(404, dict(error="These results are no longer available. Add the original files and check them again."))
                 if parts[3] == "report":
@@ -280,6 +340,11 @@ class Handler(BaseHTTPRequestHandler):
             if size <= 0 or size > MAX_UPLOAD + 1024 * 1024:
                 return self.send(413, dict(error="Add files containing sensor readings. Their combined size must be no more than 120 MB."))
             body = self.rfile.read(size)
+            review_match = re.fullmatch(r"/api/runs/([0-9a-f]+)/review", self.path)
+            if review_match:
+                request = json.loads(body)
+                run = update_review(review_match.group(1), request.get("status"), request.get("note"))
+                return self.send(200, public_run(run))
             if self.path == "/api/export":
                 request = json.loads(body)
                 return self.send(200, export_zip(request.get("ids")), "application/zip", "predictions.zip")
@@ -289,14 +354,16 @@ class Handler(BaseHTTPRequestHandler):
             if not content_type.startswith("multipart/form-data;"):
                 raise ValueError("Upload data using the file chooser.")
             message = BytesParser(policy=default).parsebytes(f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode() + body)
-            key, files = "", []
+            key, files, context = "", [], {}
             for part in message.iter_parts():
                 name = part.get_param("name", header="content-disposition")
                 if name == "system":
                     key = part.get_payload(decode=True).decode()
                 elif name == "files":
                     files.append((part.get_filename(), part.get_payload(decode=True)))
-            self.send(200, public_run(analyze(key, files)))
+                elif name in CONTEXT_FIELDS:
+                    context[name] = part.get_payload(decode=True).decode()
+            self.send(200, public_run(analyze(key, files, context)))
         except (ValueError, KeyError, TypeError, OSError) as exc:
             self.send(400, dict(error=str(exc)))
         except ImportError as exc:

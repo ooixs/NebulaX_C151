@@ -33,7 +33,15 @@ class Frame:
 
 class ContractTests(unittest.TestCase):
     def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.original_store = server.STORE
+        server.STORE = server.HistoryStore(Path(self.temporary.name) / 'history.sqlite3')
         server.RUNS.clear()
+
+    def tearDown(self):
+        server.RUNS.clear()
+        server.STORE = self.original_store
+        self.temporary.cleanup()
 
     def request(self, path, body, content_type='application/json', origin=None, host='127.0.0.1:8765'):
         handler = object.__new__(server.Handler)
@@ -142,6 +150,39 @@ class ContractTests(unittest.TestCase):
         self.assertFalse(run['preview'])
         self.assertEqual(run['files'][0]['sha256'], hashlib.sha256(b'sensor data').hexdigest())
         self.assertNotIn('csv', server.public_run(run))
+
+    def test_history_persists_context_csv_and_review(self):
+        context = {
+            'asset_id': 'Train 151',
+            'location': 'Northbound km 4.2',
+            'collected_at': '2026-09-19T10:30',
+            'work_order': 'WO-2048',
+        }
+        run = server.save_run(
+            'rail',
+            [{'file_id':'a.csv','prediction':'Side I'}],
+            [],
+            {'sha256':'model'},
+            1.2,
+            csv_content=b'file_id,prediction\na.csv,Side I\n',
+            context=context,
+        )
+        server.RUNS.clear()
+        restored = server.get_run(run['id'])
+        self.assertEqual(restored['context'], context)
+        self.assertEqual(restored['csv'], b'file_id,prediction\na.csv,Side I\n')
+        reviewed = server.update_review(run['id'], 'inspection_scheduled', 'Inspect on next shift.')
+        self.assertEqual(reviewed['review']['status'], 'inspection_scheduled')
+        self.assertEqual(server.get_run(run['id'])['review']['note'], 'Inspect on next shift.')
+        with zipfile.ZipFile(io.BytesIO(server.export_zip([run['id']]))) as archive:
+            self.assertEqual(archive.read('rail_predictions.csv'), restored['csv'])
+
+    def test_context_and_review_validation(self):
+        self.assertEqual(server.clean_context({'asset_id':'  Train 1  '})['asset_id'], 'Train 1')
+        with self.assertRaisesRegex(ValueError, '120'):
+            server.clean_context({'asset_id':'x' * 121})
+        with self.assertRaisesRegex(ValueError, 'valid review'):
+            server.update_review('missing', 'not-a-status', '')
 
     def test_no_result_if_model_changes_during_run(self):
         stub = types.ModuleType('common.inference')

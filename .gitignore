@@ -25,6 +25,7 @@ weights/**
 predictions.zip
 demo_video.*
 C151/
+app/.nebulax/
 
 # Python
 __pycache__/
