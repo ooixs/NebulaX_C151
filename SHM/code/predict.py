@@ -10,21 +10,27 @@ import re
 import sys
 from pathlib import Path
 
+import joblib
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-from SHM.code.pipeline import DamageModel, load_series  # noqa: E402
+from SHM.code.pipeline import DamageModel, ResidualDamageModel, load_series  # noqa: E402
 
 MODEL_PATH = ROOT / "SHM/model/shm_model.json"
+RESIDUAL_MODEL_PATH = ROOT / "SHM/model/shm_model.joblib"
 _M = None
 
 
-def _model() -> DamageModel:
+def _model():
     global _M
     if _M is None:
-        _M = DamageModel.from_dict(json.loads(MODEL_PATH.read_text()))
+        if RESIDUAL_MODEL_PATH.exists():
+            art = joblib.load(RESIDUAL_MODEL_PATH)
+            _M = ResidualDamageModel(art["base"], art["feature_names"], art["scaler"], art["model"])
+        else:
+            _M = DamageModel.from_dict(json.loads(MODEL_PATH.read_text()))
     return _M
 
 

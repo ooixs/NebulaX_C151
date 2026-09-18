@@ -27,11 +27,20 @@ CASES = {
 }
 
 
+def model_path(name: str) -> Path:
+    path = CASES[name]["model"]
+    if name == "shm":
+        joblib_path = path.with_suffix(".joblib")
+        if joblib_path.exists():
+            return joblib_path
+    return path
+
+
 def run_cli(name: str, tmp_path: Path) -> pd.DataFrame:
     c = CASES[name]
     if not c["inp"].exists():
         pytest.skip(f"{name}: data not present")
-    if not c["model"].exists():
+    if not model_path(name).exists():
         pytest.skip(f"{name}: model artefact not present")
     out = tmp_path / f"{name}_predictions.csv"
     r = subprocess.run([PY, str(c["script"]), "--input", str(c["inp"]), "--output", str(out)],
@@ -104,7 +113,7 @@ def test_research_model_and_stopping_rule(name):
     assert search.best_mean == pytest.approx(summary["best_score"])
     assert summary["trials"] == len(trials)
     assert not manifest["test_data_used_for_selection"]
-    assert fingerprint(folder / summary["model"]) == fingerprint(CASES[name]["model"])
+    assert fingerprint(folder / summary["model"]) == fingerprint(model_path(name))
     assert (folder / "before").is_dir()
 
 
@@ -185,11 +194,17 @@ def test_shm_research_calibration_replays_inside_training_folds():
     inputs = json.loads((folder / "inputs.json").read_text(encoding="utf-8"))
     files = {name: i for i, name in enumerate(inputs["files"])}
     trials = json.loads((folder / "trials.json").read_text(encoding="utf-8"))
+    replayed = 0
     for i, trial in enumerate(trials):
-        configs = json.loads((folder / f"configs_{i:02d}.json").read_text(encoding="utf-8"))
         with np.load(folder / f"trial_{i:02d}.npz", allow_pickle=False) as archive:
-            S, D, oof = archive["S"], archive["target"], archive["oof"]
+            D, oof = archive["target"], archive["oof"]
             assert [shm_score(D, p)["score"] for p in oof] == pytest.approx(trial["scores"])
+            configs_path = folder / f"configs_{i:02d}.json"
+            if not configs_path.exists():
+                assert trial.get("kind") == "custom"
+                continue
+            configs = json.loads(configs_path.read_text(encoding="utf-8"))
+            S = archive["S"]
             for fold in trial["folds"]:
                 te = np.array([files[name] for name in fold["validation_files"]])
                 tr = np.setdiff1d(np.arange(len(D)), te)
@@ -197,6 +212,8 @@ def test_shm_research_calibration_replays_inside_training_folds():
                 assert configs[j] == fold["config"]
                 assert C == pytest.approx(fold["C"])
                 assert np.allclose(S[te, j] / C, oof[fold["seed"], te])
+            replayed += 1
+    assert replayed > 0
 
 
 def test_door_research_end_to_end_score_replays():

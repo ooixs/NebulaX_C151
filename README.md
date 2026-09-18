@@ -429,7 +429,7 @@ training data only; test CSVs were regenerated after the models were fixed.
 | Door | 5 contiguous time blocks; thresholds selected by inner blocked CV | IoU-F1 **1.000000** in every outer fold | Metric ceiling |
 | ACV | 6 leave-one-case-out cases; fixed physics weights, fold-local healthy-response fitting | Rank-decay **1.000000** | Metric ceiling |
 | Rail Corrugation | 5-fold × 3 repeats; references and threshold calibration nested inside each outer training fold | Macro F1 **0.823227 ± 0.016735** | 5 consecutive non-improving challengers |
-| SHM | 8-fold × 3 seeds; convention and scale selection confined to training files | 1 − MAPE **0.974120 ± 0.000252** | 5 consecutive non-improving candidate families |
+| SHM | 8-fold × 3 seeds; convention and scale selection confined to training files | 1 − MAPE **0.974120 ± 0.000252** | 5 consecutive non-improving candidate families (superseded below) |
 
 These are validation estimates, not independent test scores. The standard deviations describe
 variation between CV repeats, not confidence intervals. In particular, ACV has only six cases,
@@ -483,6 +483,60 @@ after selection.
 Tests cover MAPE calibration, fold isolation, stopping rules, archived-score replay, model/export
 consistency, full prediction coverage, and all four prediction CLIs. Use `--research` for the
 current validation protocol; the older exploratory scripts and tables below are historical.
+
+### sg-experiments branch evaluation — 18 September 2026
+
+`origin/sg-experiments` (commits `8f17643`, `fa07703`) contributes per-subsystem feature
+extractors, app-oriented pipeline wrappers, a 1,737-line Streamlit app with its own pre-trained
+models, and an architecture PDF. Its modelling ideas were re-evaluated under the same harness,
+folds, and stopping rules as the main run (run IDs `2026-09-18-sg-branch*`). The branch itself
+was not merged; the ideas were re-implemented against the validated pipelines.
+
+**Data-quality finding.** The branch's hand-rolled rainflow counter disagrees with the ASTM
+E1049 `rainflow` package by up to ~99% on range-energy sums (S₃/S₅) over the training files, so
+its app models were trained on unreliable fatigue features. All evaluations below recompute the
+branch's feature ideas with the validated rainflow. The branch's Streamlit SHM ensemble
+(Huber + shallow ExtraTrees on 13 features, log-damage target), replicated on corrected
+features, scores **0.960466** — below the physics baseline.
+
+**Rail (run `2026-09-18-sg-branch`, unpublished).** The branch's per-car bilateral asymmetry
+statistics (per-car side diff/ratio, dominance counts, speed-normalised RMS) were added as
+side-row features (`aggregate(paired=True)`, feature mode `cardom`). All five challengers lost
+to the incumbent 0.823227 ± 0.016735: ET 0.815584, RF 0.807338, LightGBM 0.808575, ET
+max_features 0.3 0.799603, ET min_samples_leaf 2 0.810536. The retained Rail model is unchanged.
+The branch's remaining rail ideas (band-power ratios, 3-class ensembles with class-probability
+multipliers) duplicate features or approaches that already lost in earlier phases.
+
+**SHM (runs `2026-09-18-sg-branch{,2,3}`; final run published).** Fifteen candidates: the
+replicated SG ensemble, per-load-condition and per-skew-sign grouped calibration (the branch's
+AW0/AW4 `mean > 0` proxy — grouped C reached only 0.974511), and a family of physics-plus-residual
+hybrids on 32 SG-style features (multi-exponent log rainflow energies, Goodman variants,
+percentile spreads, spectral moments) computed with the validated rainflow. Champion:
+
+- **`m = 5` Miner's rule + Huber(α = 1) log-residual correction** — selection CV
+  **0.979701 ± 0.001083** vs physics-only 0.974120; per-file CV APE p50 1.39% / p90 4.82% /
+  worst 7.78% (physics-only: 1.65% / 5.77% / 13.90%).
+- Neighbouring candidates (α ∈ {0.3, 3, 10}, ridge, LightGBM, ExtraTrees, averages, core-13
+  subset) did not clear the acceptance rule; the search stopped at the plateau.
+- **Fresh-seed confirmation** (seeds 100–102, same protocol): champion **0.980676** vs baseline
+  0.974258 on identical splits — better in every repeat, gain +0.006418 > 0.002 floor. Shipped.
+
+The shipped artefact is now `SHM/model/shm_model.joblib` (`ResidualDamageModel`: rainflow →
+S₅/C base × exp(Huber correction) on 32 per-file features); the previous `shm_model.json` is
+preserved under the run's `before/` folder, and `predict.py` loads the JSON physics model when
+no joblib is present. `predictions/shm_predictions.csv` was regenerated (range
+0.027894–0.823098). Caveats: the correction is fitted on 64 files; the confirmation used fresh
+splits but the same 64 files, so some selection optimism can remain; the residual model is not
+interpretable physics — the physics-only model remains available in the run archives.
+
+**Door / ACV.** Both are at their validation ceilings; the branch adds app wrappers around
+equivalent scoring ideas (its ACV scorer similarly combines tracking error, fleet-relative
+deviation, and a heavily weighted pressure asymmetry), so nothing was adopted.
+
+**Not merged (out of scope for results):** the Streamlit app (compulsory deliverable `app/` is
+still empty on main — the branch's app predicts with its own bundled models, including the
+miscalibrated SHM ensemble, so integration should rewire it to the `<Sub>/code/predict.py`
+interfaces), the app model binaries, the feature CSV exports, and the architecture PDF.
 
 ### Earlier Door experiments
 

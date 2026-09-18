@@ -50,6 +50,49 @@ def damage_sum(cyc: np.ndarray, m: float, residue: str = "half", magnitude: str 
     return float(np.sum(cnt * a ** m))
 
 
+SG_FEATURE_EXPONENTS = (2.0, 2.5, 3.0, 3.5, 4.0, 4.25, 4.5, 5.0)
+SG_GOODMAN_GRID = tuple((su, m) for su in (400, 600, 800) for m in (3.0, 3.5, 4.0))
+
+
+def sg_series_features(x: np.ndarray, cyc: np.ndarray) -> dict:
+    """Per-file diagnostic features (sg-experiments branch ideas, validated rainflow)."""
+    from scipy import signal as sp_signal
+    from scipy import stats as sp_stats
+
+    f, pxx = sp_signal.welch(x, fs=100.0, nperseg=2048)
+    m0, m2, m4 = float(pxx.sum()), float(((f ** 2) * pxx).sum()), float(((f ** 4) * pxx).sum())
+    p = np.percentile(x, [1, 5, 95, 99])
+    rms = float(np.sqrt(np.mean(x ** 2)))
+    out = dict(mean=float(x.mean()), std=float(x.std()), ptp=float(np.ptp(x)), p01=float(p[0]),
+               p95_p05=float(p[2] - p[1]), p99_p01=float(p[3] - p[0]), skewness=float(sp_stats.skew(x)),
+               kurtosis=float(sp_stats.kurtosis(x)), crest_factor=float(np.max(np.abs(x)) / (rms + 1e-8)),
+               spec_alpha2=m2 / (np.sqrt(m0 * m4) + 1e-8), spec_zero_crossing=float(np.sqrt(m2 / (m0 + 1e-8))),
+               spec_peak_rate=float(np.sqrt(m4 / (m2 + 1e-8))))
+    for m in SG_FEATURE_EXPONENTS:
+        out[f"log_rf_energy_range_m_{m}"] = float(np.log1p(damage_sum(cyc, m, magnitude="range")))
+    for su, m in SG_GOODMAN_GRID:
+        out[f"log_rf_goodman_su_{su}_m_{m}"] = float(np.log1p(damage_sum(cyc, m, goodman_su=float(su))))
+    out["rf_total_cycles"] = float(cyc[:, 2].sum())
+    out["rf_max_range"] = float(cyc[:, 0].max())
+    out["rf_p95_range"] = float(np.percentile(cyc[:, 0], 95))
+    return out
+
+
+class ResidualDamageModel:
+    """Physics damage model with a multiplicative machine-learned log-residual correction."""
+
+    def __init__(self, base: dict, feature_names: list, scaler, model):
+        self.base = DamageModel.from_dict(base)
+        self.feature_names, self.scaler, self.model = list(feature_names), scaler, model
+
+    def predict(self, x: np.ndarray) -> float:
+        cyc = cycles(x)
+        feats = sg_series_features(x, cyc)
+        X = np.array([[feats[name] for name in self.feature_names]])
+        correction = float(np.exp(self.model.predict(self.scaler.transform(X))[0]))
+        return self.base.predict_from_cycles(cyc) * correction
+
+
 def mape(y, p) -> float:
     y, p = np.asarray(y, float), np.asarray(p, float)
     return float(np.mean(np.abs(y - p) / np.abs(y)))

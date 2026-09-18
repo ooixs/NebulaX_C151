@@ -174,6 +174,23 @@ def aggregate(ct: pd.DataFrame, v: float, paired: bool = False) -> dict:
                 full = np.full(len(pair_cols), np.nan)
                 full[valid] = a
                 feats.update({f"s{s}_pair_{c}_{suffix}": value for c, value in zip(pair_cols, full)})
+        car_rms = ct.groupby(["car", "side"])["rms"].mean().unstack()
+        car_shock = ct.groupby(["car", "side"])["shock_rms"].mean().unstack()
+        for own, oth in ((1, 2), (2, 1)):
+            diff = (car_rms[own] - car_rms[oth]).to_numpy(float)
+            ratio = (car_rms[own] / (car_rms[oth] + 1e-9)).to_numpy(float)
+            sdiff = (car_shock[own] - car_shock[oth]).to_numpy(float)
+            feats[f"s{own}_pair_car_diff_mean"] = float(diff.mean())
+            feats[f"s{own}_pair_car_diff_std"] = float(diff.std())
+            feats[f"s{own}_pair_car_diff_max"] = float(diff.max())
+            feats[f"s{own}_pair_car_diff_min"] = float(diff.min())
+            feats[f"s{own}_pair_car_diff_pos_frac"] = float((diff > 0).mean())
+            feats[f"s{own}_pair_car_dom_count"] = float((diff > 0.04).sum())
+            feats[f"s{own}_pair_car_ratio_mean"] = float(ratio.mean())
+            feats[f"s{own}_pair_car_ratio_max"] = float(ratio.max())
+            feats[f"s{own}_pair_car_shock_diff_mean"] = float(sdiff.mean())
+            feats[f"s{own}_pair_car_shock_diff_max"] = float(sdiff.max())
+            feats[f"s{own}_pair_speednorm_rms"] = float(ct.loc[ct.side == own, "rms"].mean() / (v + 1.0))
     return feats
 
 

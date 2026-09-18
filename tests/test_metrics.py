@@ -78,6 +78,43 @@ def test_shm_research_starts_without_feature_caches(tmp_path, monkeypatch):
     assert not (train.MODEL / "shm_model.json").exists()
 
 
+def test_shm_grouped_calibration_fits_only_training_files():
+    from SHM.code.train import grouped_C_predict
+    from SHM.code.pipeline import fit_C
+
+    S = np.array([1.0, 2.0, 3.0, 10.0, 20.0, 30.0, 4.0, 40.0])
+    D = S / np.array([2.0, 2.0, 2.0, 4.0, 4.0, 4.0, 2.0, 4.0])
+    groups = np.array([0, 0, 0, 1, 1, 1, 0, 1])
+    tr, te = np.arange(6), np.array([6, 7])
+    assert grouped_C_predict(S, D, groups, tr, te) == pytest.approx(D[te])
+    # a group absent from training falls back to the pooled training scale
+    lonely = np.array([0, 0, 0, 0, 0, 0, 1, 1])
+    pooled = fit_C(S[tr], D[tr])
+    assert grouped_C_predict(S, D, lonely, tr, te) == pytest.approx(S[te] / pooled)
+
+
+def test_shm_residual_model_roundtrip_and_features():
+    from sklearn.linear_model import LinearRegression
+    from sklearn.preprocessing import StandardScaler
+    from SHM.code.pipeline import ResidualDamageModel, cycles, damage_sum, sg_series_features
+
+    rng = np.random.default_rng(0)
+    x = rng.normal(0, 3, 4096)
+    cyc = cycles(x)
+    feats = sg_series_features(x, cyc)
+    assert feats["mean"] == pytest.approx(float(x.mean()))
+    assert feats["ptp"] == pytest.approx(float(np.ptp(x)))
+    assert feats["log_rf_energy_range_m_5.0"] == pytest.approx(np.log1p(damage_sum(cyc, 5.0, magnitude="range")))
+    assert all(np.isfinite(v) for v in feats.values())
+    names = ["std", "log_rf_energy_range_m_5.0"]
+    X = np.array([[feats[n] for n in names], [feats["std"] * 2, feats["log_rf_energy_range_m_5.0"] + 1]])
+    scaler = StandardScaler().fit(X)
+    model = LinearRegression().fit(scaler.transform(X), np.array([0.0, 0.0]))
+    base_C = damage_sum(cyc, 5.0) / 0.25
+    residual = ResidualDamageModel(dict(m=5.0, C=base_C), names, scaler, model)
+    assert residual.predict(x) == pytest.approx(0.25)
+
+
 def test_research_plateau_requires_meaningful_improvement():
     from common.research import Plateau
 
@@ -198,6 +235,15 @@ def test_rail_engineered_features_preserve_legacy_features():
     assert rows[0]["ratio_rms_mean"] == pytest.approx(1 / 3)
     assert rows[1]["ratio_rms_mean"] == pytest.approx(-1 / 3)
     assert rows[0]["own_pair_log_rms_mean"] == pytest.approx(np.log10(2))
+    assert rows[0]["own_pair_car_diff_mean"] == pytest.approx(1.0)
+    assert rows[0]["own_pair_car_dom_count"] == pytest.approx(8.0)
+    assert rows[0]["own_pair_car_ratio_mean"] == pytest.approx(2.0)
+    assert rows[1]["own_pair_car_diff_mean"] == pytest.approx(-1.0)
+    assert rows[1]["own_pair_car_dom_count"] == pytest.approx(0.0)
+    assert rows[1]["own_pair_car_diff_pos_frac"] == pytest.approx(0.0)
+    assert rows[0]["own_pair_car_shock_diff_mean"] == pytest.approx(0.5)
+    assert rows[0]["own_pair_speednorm_rms"] == pytest.approx(2.0 / 13.0)
+    assert rows[0]["rel_pair_car_diff_mean"] == pytest.approx(2.0)
 
 
 def test_acv_worked_example():

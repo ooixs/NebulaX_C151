@@ -15,7 +15,8 @@ from sklearn.model_selection import KFold
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from SHM.code.pipeline import DamageModel, cycles, damage_sum, fit_C, load_series, mape  # noqa: E402
+from SHM.code.pipeline import (DamageModel, cycles, damage_sum, fit_C, load_series, mape,  # noqa: E402
+                               sg_series_features)
 
 DATA = ROOT / "data/SHM"
 WEIGHTS = ROOT / "weights/SHM"
@@ -56,6 +57,133 @@ def select_config(S, D, indices, configs, tolerance=0.0002):
         return complexity(cfg) + extra, abs(cfg["m"] - 5.0), errors[j], j
     j = min(eligible, key=key)
     return int(j), float(scales[j])
+
+
+def grouped_C_predict(S, D, groups, tr, te):
+    """Per-group MAPE-optimal C, fitted on training indices only; groups with <3 training files fall back to the pooled C."""
+    fallback = fit_C(S[tr], D[tr])
+    out = np.empty(len(te), dtype=float)
+    for value in np.unique(groups[te]):
+        trg = tr[groups[tr] == value]
+        C = fit_C(S[trg], D[trg]) if len(trg) >= 3 else fallback
+        out[groups[te] == value] = S[te][groups[te] == value] / C
+    return out
+
+
+def sg_feature_table(cyc, lab, jobs):
+    """Per-file features in the spirit of the sg-experiments branch, computed with the validated rainflow."""
+    def one(name, c):
+        return sg_series_features(load_series(DATA / "Train" / name), c)
+    return pd.DataFrame(Parallel(n_jobs=jobs)(delayed(one)(name, c) for name, c in zip(lab.filename, cyc)))
+
+
+SG_CORE_FEATURES = ["log_rf_energy_range_m_4.25", "log_rf_energy_range_m_3.5", "log_rf_energy_range_m_3.0",
+                    "log_rf_goodman_su_600_m_3.5", "p95_p05", "p99_p01", "std", "ptp", "rf_p95_range",
+                    "p01", "crest_factor", "spec_alpha2", "spec_zero_crossing"]
+
+
+def sg_families(args, D, s5, T):
+    """Candidate families derived from the sg-experiments branch, evaluated with fold-local fitting."""
+    from sklearn.ensemble import ExtraTreesRegressor
+    from sklearn.linear_model import HuberRegressor, Ridge
+    from sklearn.preprocessing import StandardScaler
+
+    X_all = T.to_numpy(float)
+    X_core = T[SG_CORE_FEATURES].to_numpy(float)
+    log_D = np.log(D)
+
+    def ensemble_fn(tr, te, seed):
+        scaler = StandardScaler().fit(X_core[tr])
+        pred = np.zeros(len(te))
+        for weight, model in ((0.5521, HuberRegressor(alpha=0.01, max_iter=20000)),
+                              (0.4479, ExtraTreesRegressor(n_estimators=150, max_depth=5, random_state=42))):
+            model.fit(scaler.transform(X_core[tr]), log_D[tr])
+            pred += weight * np.exp(model.predict(scaler.transform(X_core[te])))
+        return np.clip(pred, 1e-3, 1.5)
+
+    def residual_fn(make_model, columns=None):
+        X = X_all if columns is None else T[list(columns)].to_numpy(float)
+        def fn(tr, te, seed):
+            C = fit_C(s5[tr], D[tr])
+            base = s5 / C
+            scaler = StandardScaler().fit(X[tr])
+            model = make_model(seed).fit(scaler.transform(X[tr]), np.log(D[tr] / base[tr]))
+            return base[te] * np.exp(model.predict(scaler.transform(X[te])))
+        return fn
+
+    def residual_final(make_model, columns=None):
+        def final():
+            X = X_all if columns is None else T[list(columns)].to_numpy(float)
+            C = fit_C(s5, D)
+            scaler = StandardScaler().fit(X)
+            model = make_model(0).fit(scaler.transform(X), np.log(D / (s5 / C)))
+            return dict(kind="physics_plus_residual", base=DamageModel(m=5.0, C=C).to_dict(),
+                        feature_names=list(T.columns) if columns is None else list(columns),
+                        scaler=scaler, model=model)
+        return final
+
+    def group_fn(groups):
+        return lambda tr, te, seed: grouped_C_predict(s5, D, groups, tr, te)
+
+    def make_lgbm(seed):
+        from lightgbm import LGBMRegressor
+        return LGBMRegressor(n_estimators=300, learning_rate=0.03, num_leaves=7, min_child_samples=8,
+                             colsample_bytree=0.7, reg_lambda=1.0, random_state=seed, verbosity=-1)
+
+    class HuberEtAverage:
+        def __init__(self, seed):
+            self.a = HuberRegressor(alpha=0.01, max_iter=20000)
+            self.b = ExtraTreesRegressor(n_estimators=150, max_depth=5, random_state=seed)
+
+        def fit(self, X, y):
+            self.a.fit(X, y); self.b.fit(X, y); return self
+
+        def predict(self, X):
+            return 0.5 * (self.a.predict(X) + self.b.predict(X))
+
+    make_huber = lambda alpha: (lambda seed: HuberRegressor(alpha=alpha, max_iter=20000))
+    aw_groups = (T["mean"].to_numpy() > 0).astype(int)
+    skew_groups = (T["skewness"].to_numpy() > 0).astype(int)
+    return [
+        ("sg_huber_extratrees_ensemble", dict(fn=ensemble_fn, description="SG app ensemble replicated on validated rainflow features")),
+        ("aw_proxy_grouped_C", dict(fn=group_fn(aw_groups), description="per-load-condition C (SG is_aw4_proxy: series mean > 0)",
+                                    groups=aw_groups.tolist())),
+        ("skew_sign_grouped_C", dict(fn=group_fn(skew_groups), description="per-skew-sign C (strongest residual correlate)",
+                                     groups=skew_groups.tolist())),
+        ("physics_plus_huber_residual", dict(fn=residual_fn(make_huber(0.01)), final=residual_final(make_huber(0.01)),
+                                             description="S5/C plus Huber log-residual on SG features")),
+        ("physics_plus_extratrees_residual", dict(fn=residual_fn(lambda seed: ExtraTreesRegressor(n_estimators=150, max_depth=5, random_state=seed)),
+                                                  final=residual_final(lambda seed: ExtraTreesRegressor(n_estimators=150, max_depth=5, random_state=seed)),
+                                                  description="S5/C plus shallow ExtraTrees log-residual on SG features")),
+        ("physics_plus_ridge_residual", dict(fn=residual_fn(lambda seed: Ridge(alpha=1.0)), final=residual_final(lambda seed: Ridge(alpha=1.0)),
+                                             description="same features, squared loss: does the robust loss matter?")),
+        ("physics_plus_huber_core13", dict(fn=residual_fn(make_huber(0.01), columns=SG_CORE_FEATURES),
+                                           final=residual_final(make_huber(0.01), columns=SG_CORE_FEATURES),
+                                           description="Huber log-residual on the 13 SG core features only")),
+        ("physics_plus_lgbm_residual", dict(fn=residual_fn(make_lgbm), final=residual_final(make_lgbm),
+                                            description="S5/C plus LightGBM log-residual on SG features")),
+        ("physics_plus_huber_alpha1", dict(fn=residual_fn(make_huber(1.0)), final=residual_final(make_huber(1.0)),
+                                           description="strongly regularised Huber log-residual")),
+        ("physics_plus_huber_et_average", dict(fn=residual_fn(lambda seed: HuberEtAverage(seed)),
+                                               final=residual_final(lambda seed: HuberEtAverage(seed)),
+                                               description="average of Huber and ExtraTrees log-residuals")),
+        ("physics_plus_huber_alpha3", dict(fn=residual_fn(make_huber(3.0)), final=residual_final(make_huber(3.0)),
+                                           description="Huber log-residual, alpha=3")),
+        ("physics_plus_huber_alpha10", dict(fn=residual_fn(make_huber(10.0)), final=residual_final(make_huber(10.0)),
+                                            description="Huber log-residual, alpha=10")),
+        ("physics_plus_huber_alpha03", dict(fn=residual_fn(make_huber(0.3)), final=residual_final(make_huber(0.3)),
+                                            description="Huber log-residual, alpha=0.3")),
+        ("physics_plus_ridge_alpha10", dict(fn=residual_fn(lambda seed: Ridge(alpha=10.0)), final=residual_final(lambda seed: Ridge(alpha=10.0)),
+                                            description="Ridge log-residual, alpha=10")),
+        ("physics_plus_ridge_alpha30", dict(fn=residual_fn(lambda seed: Ridge(alpha=30.0)), final=residual_final(lambda seed: Ridge(alpha=30.0)),
+                                            description="Ridge log-residual, alpha=30")),
+        ("physics_plus_huber_alpha1_core13", dict(fn=residual_fn(make_huber(1.0), columns=SG_CORE_FEATURES),
+                                                  final=residual_final(make_huber(1.0), columns=SG_CORE_FEATURES),
+                                                  description="regularised Huber on the 13 SG core features")),
+        ("physics_plus_huber_alpha1_eps2", dict(fn=residual_fn(lambda seed: HuberRegressor(alpha=1.0, epsilon=2.0, max_iter=20000)),
+                                                final=residual_final(lambda seed: HuberRegressor(alpha=1.0, epsilon=2.0, max_iter=20000)),
+                                                description="regularised Huber with a wider quadratic zone")),
+    ]
 
 
 def research(args):
@@ -128,41 +256,102 @@ def research(args):
                                    for width in (0.05, 0.1, 0.2, 0.5, 1.0, 2.0) for mode in ("ceil", "midpoint", "nearest")]),
         ("broad_physics_grid", [{**base, **cfg} for cfg in old_configs]),
     ]
-    all_configs = {key(cfg): cfg for _, configs in families for cfg in configs}
-    families += [(f"joint_grid_tolerance_{tolerance:g}", list(all_configs.values()))
-                 for tolerance in (0.0, 0.0001, 0.0005, 0.001, 0.002, 0.005)]
+    if getattr(args, "families", "default") == "sg":
+        T = sg_feature_table(cyc, lab, args.jobs)
+        T.to_csv(run.path / "sg_features.csv", index=False)
+        families = [("corrected_m5", [base])] + sg_families(args, D, s5, T)
+        print(f"SG-branch evaluation: {len(T.columns)} features per file for the custom candidates", flush=True)
+    else:
+        all_configs = {key(cfg): cfg for _, configs in families for cfg in configs}
+        families += [(f"joint_grid_tolerance_{tolerance:g}", list(all_configs.values()))
+                     for tolerance in (0.0, 0.0001, 0.0005, 0.001, 0.002, 0.005)]
     best = None
-    for trial, (name, configs) in enumerate(families):
-        tolerance = float(name.rsplit("_", 1)[1]) if name.startswith("joint_grid_tolerance_") else 0.0002
-        missing = [cfg for cfg in configs if key(cfg) not in columns]
-        def column(cfg):
-            return key(cfg), np.array([damage_sum(c, **cfg) for c in cyc])
-        columns.update(Parallel(n_jobs=args.jobs, prefer="threads")(delayed(column)(cfg) for cfg in missing))
-        S = np.column_stack([columns[key(cfg)] for cfg in configs])
+    for trial, (name, payload) in enumerate(families):
         oof = np.zeros((args.repeats, len(D)))
         fold_reports = []
-        for seed, tr, te in splits:
-            j, C = select_config(S, D, tr, configs, tolerance)
-            oof[seed, te] = S[te, j] / C
-            fold_reports.append(dict(seed=seed, validation_files=lab.filename.iloc[te].tolist(),
-                                     config=configs[j], C=C, score=shm_score(D[te], oof[seed, te])["score"]))
-        scores = [shm_score(D, p)["score"] for p in oof]
-        result = run.record(name, scores, configurations=len(configs), folds=fold_reports,
-                            fit_tolerance=tolerance, worst_file_ape=float(np.max(np.abs(1 - oof / D))))
-        np.savez_compressed(run.path / f"trial_{trial:02d}.npz", oof=oof, S=S, target=D)
-        run.save_json(f"configs_{trial:02d}.json", configs)
-        if result["accepted"]:
-            j, C = select_config(S, D, np.arange(len(D)), configs, tolerance)
-            best = dict(config=configs[j], C=C, oof=oof, scores=scores, folds=fold_reports)
+        if isinstance(payload, list):
+            configs = payload
+            tolerance = float(name.rsplit("_", 1)[1]) if name.startswith("joint_grid_tolerance_") else 0.0002
+            missing = [cfg for cfg in configs if key(cfg) not in columns]
+            def column(cfg):
+                return key(cfg), np.array([damage_sum(c, **cfg) for c in cyc])
+            columns.update(Parallel(n_jobs=args.jobs, prefer="threads")(delayed(column)(cfg) for cfg in missing))
+            S = np.column_stack([columns[key(cfg)] for cfg in configs])
+            for seed, tr, te in splits:
+                j, C = select_config(S, D, tr, configs, tolerance)
+                oof[seed, te] = S[te, j] / C
+                fold_reports.append(dict(seed=seed, validation_files=lab.filename.iloc[te].tolist(),
+                                         config=configs[j], C=C, score=shm_score(D[te], oof[seed, te])["score"]))
+            scores = [shm_score(D, p)["score"] for p in oof]
+            result = run.record(name, scores, configurations=len(configs), folds=fold_reports,
+                                fit_tolerance=tolerance, worst_file_ape=float(np.max(np.abs(1 - oof / D))))
+            np.savez_compressed(run.path / f"trial_{trial:02d}.npz", oof=oof, S=S, target=D)
+            run.save_json(f"configs_{trial:02d}.json", configs)
+            if result["accepted"]:
+                j, C = select_config(S, D, np.arange(len(D)), configs, tolerance)
+                best = dict(kind="grid", config=configs[j], C=C, oof=oof, scores=scores, folds=fold_reports)
+        else:
+            for seed, tr, te in splits:
+                oof[seed, te] = payload["fn"](tr, te, seed)
+                fold_reports.append(dict(seed=seed, validation_files=lab.filename.iloc[te].tolist(),
+                                         score=shm_score(D[te], oof[seed, te])["score"]))
+            scores = [shm_score(D, p)["score"] for p in oof]
+            result = run.record(name, scores, kind="custom", description=payload["description"], folds=fold_reports,
+                                worst_file_ape=float(np.max(np.abs(1 - oof / D))))
+            np.savez_compressed(run.path / f"trial_{trial:02d}.npz", oof=oof, target=D)
+            if result["accepted"]:
+                best = dict(kind="custom", name=name, payload=payload, oof=oof, scores=scores, folds=fold_reports)
         if run.tracker.stop_reason:
             break
     if run.tracker.stop_reason is None:
         run.finish(published=False)
         raise RuntimeError("SHM candidate list exhausted before convergence; extend the search")
-    model = DamageModel(C=best["C"], **best["config"])
-    run.save_json("shm_model.json", model.to_dict())
     errors = np.abs(1 - best["oof"] / D)
     run.save_json("per_file_errors.json", dict(zip(lab.filename, errors.mean(axis=0).tolist())))
+    if best["kind"] == "custom":
+        seeds = (100, 101, 102)
+        confirm_splits = [(i, tr, te) for i, s in enumerate(seeds)
+                          for tr, te in KFold(args.folds, shuffle=True, random_state=s).split(D)]
+        base_oof = np.zeros((len(seeds), len(D)))
+        champion_oof = np.zeros((len(seeds), len(D)))
+        for i, tr, te in confirm_splits:
+            base_oof[i, te] = s5[te] / fit_C(s5[tr], D[tr])
+            champion_oof[i, te] = best["payload"]["fn"](tr, te, 100 + i)
+        base_scores = [shm_score(D, p)["score"] for p in base_oof]
+        champion_scores = [shm_score(D, p)["score"] for p in champion_oof]
+        gain = float(np.mean(champion_scores) - np.mean(base_scores))
+        required = max(args.min_delta, float(np.std(base_scores)))
+        confirmed = bool(all(c > b for c, b in zip(champion_scores, base_scores)) and gain > required)
+        confirmation = dict(name=best["name"], seeds=list(seeds), baseline_scores=base_scores,
+                            champion_scores=champion_scores, gain=gain, required_gain=required,
+                            accepted=confirmed, description=best["payload"]["description"])
+        run.save_json("confirmation.json", confirmation)
+        print(f"confirmation on fresh seeds: champion {np.mean(champion_scores):.6f} vs baseline "
+              f"{np.mean(base_scores):.6f} -> {'CONFIRMED' if confirmed else 'REJECTED'}", flush=True)
+        if not confirmed or "final" not in best["payload"]:
+            run.finish(published=False, model=None, champion=best["name"], champion_confirmed=confirmed,
+                       fallback="incumbent shipped model retained",
+                       legacy_cv_mean=float(np.mean(legacy_scores)),
+                       validation="file-level CV; all convention and scale selection inside training folds",
+                       p50_ape=float(np.median(errors)), p90_ape=float(np.quantile(errors, 0.9)), worst_ape=float(errors.max()))
+            return
+        artifact = best["payload"]["final"]()
+        artifact.update(research_run=run.run_id, cv_scores=best["scores"], confirmation=confirmation,
+                        validation="file-level CV with fold-local scaler/model/C fitting; fresh-seed confirmation")
+        joblib.dump(artifact, run.path / "shm_model.joblib")
+        if args.ship:
+            run.publish(run.path / "shm_model.joblib", MODEL / "shm_model.joblib")
+            stale = MODEL / "shm_model.json"
+            if stale.exists():
+                run.snapshot(stale)
+                stale.unlink()
+        run.finish(published=args.ship, model="shm_model.joblib", champion=best["name"], champion_confirmed=True,
+                   confirmation_gain=gain, legacy_cv_mean=float(np.mean(legacy_scores)),
+                   validation="file-level CV; fold-local scaler/model/C fitting; fresh-seed confirmation",
+                   p50_ape=float(np.median(errors)), p90_ape=float(np.quantile(errors, 0.9)), worst_ape=float(errors.max()))
+        return
+    model = DamageModel(C=best["C"], **best["config"])
+    run.save_json("shm_model.json", model.to_dict())
     if args.ship:
         run.publish(run.path / "shm_model.json", MODEL / "shm_model.json")
     run.finish(published=args.ship, model="shm_model.json", final=model.to_dict(),
@@ -179,6 +368,7 @@ def main():
     ap.add_argument("--folds", type=int, default=8)
     ap.add_argument("--repeats", type=int, default=3)
     ap.add_argument("--jobs", type=int, default=6)
+    ap.add_argument("--families", default="default", choices=["default", "sg"])
     ap.add_argument("--ship", action="store_true")
     args = ap.parse_args()
     if args.research:

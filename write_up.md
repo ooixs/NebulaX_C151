@@ -10,7 +10,7 @@ submission spec, one copy sits at the top level of `Optional_Items/`.
 | Door | Segment a continuous stream into door cycles, label each Normal / Abnormal resistance | Timestamp-gap segmentation → per-cycle current-profile features → RF + logistic-regression ensemble | 5 contiguous time blocks with inner blocked threshold selection | IoU-weighted F1 **1.000** (segmentation alone 1.000) |
 | ACV | Rank 8 cars by refrigerant-leak likelihood | Peer-relative cabin-temperature deviation, plus a fixed-weight discharge-pressure tie-breaker where pressure telemetry exists | Leave-one-case-out over 6 cases | Rank-decay **1.000** (0.979 from temperature alone) |
 | Rail Corrugation | Normal / Side I / Side II per 1-second recording | Speed-normalised spectral features → shared per-side ExtraTrees detector | 5-fold × 3 repeats with nested reference/threshold fitting, 272 files | Macro F1 **0.823227 ± 0.016735** |
-| SHM | Cumulative fatigue damage per file | ASTM rainflow + Miner's rule, `D = Σ nᵢ aᵢ⁵ / C`, corrected MAPE-optimal C | 8-fold × 3 seeds, 64 files | 1 − MAPE **0.974120 ± 0.000252** |
+| SHM | Cumulative fatigue damage per file | ASTM rainflow + Miner's rule `D = S₅/C` with a Huber(α=1) log-residual correction on 32 rainflow/spectral features | 8-fold × 3 seeds, 64 files; fresh-seed confirmation | 1 − MAPE **0.979701 ± 0.001083** (confirmation 0.980676 vs 0.974258 physics-only) |
 
 These are the results of the `2026-09-18-autoresearch` rerun. Thresholds, reference profiles and
 calibration constants were fitted without the corresponding outer validation labels. These are
@@ -189,12 +189,22 @@ landed within +0.0011 of that baseline, below the practical improvement floor.
 **Current rerun.** Fixing the MAPE calibration weights raised like-for-like CV from **0.973615**
 to **0.974120 ± 0.000252**. Five further families tested range-bin counts, finer bin counts,
 alternative bin centres, fine S-N exponents and residue conventions. The strongest, fine
-exponents, reached **0.975100**, but its +0.000980 gain did not clear the 0.002 floor. Retained
-m = 5, ASTM half cycles and no binning, cut-off or mean-stress correction. Per-file CV APE has
-median 1.65%, 90th percentile 5.77%, and worst 13.90%. The residual cause remains unresolved;
-the search plateau is not a proof that it is irreducible.
+exponents, reached **0.975100**, but its +0.000980 gain did not clear the 0.002 floor. At that
+point the retained model was m = 5, ASTM half cycles and no binning, cut-off or mean-stress
+correction, with per-file CV APE median 1.65%, p90 5.77%, worst 13.90%.
 
-**Test predictions.** 16 values in 0.029057–0.821870 (training label range 0.029–0.928).
+**sg-experiments evaluation (shipped).** The sg-experiments branch contributed feature ideas
+(multi-exponent log rainflow energies, Goodman variants, percentile spreads, spectral moments,
+an AW0/AW4 load proxy). Its own custom rainflow disagrees with the ASTM `rainflow` package by up
+to ~99% on range-energy sums, so all ideas were recomputed with the validated counter; the
+branch's app ensemble replicated on corrected features scores 0.960466, below physics. Grouped
+calibrations failed, but **S₅/C plus a Huber(α=1) log-residual on 32 such features** reached CV
+**0.979701 ± 0.001083** and passed a fresh-seed confirmation (0.980676 vs 0.974258 physics-only,
+better in every repeat, gain +0.0064 > the 0.002 floor). Per-file CV APE: median 1.39%, p90
+4.82%, worst 7.78%. Shipped as `SHM/model/shm_model.joblib`; the physics-only JSON model remains
+in the run archive and `predict.py` falls back to it when no joblib is present.
+
+**Test predictions.** 16 values in 0.027894–0.823098 (training label range 0.029–0.928).
 
 ## 7. Deliverables and reproducibility
 
@@ -221,8 +231,11 @@ the search plateau is not a proof that it is irreducible.
 - **Rail:** Side I has only 14 training examples. Nested CV is 0.8232 ± 0.0167, fresh-split
   confirmation is 0.8037, and contiguous-block validation is 0.7654. None is an independent
   labelled test score; repeatedly searching these files can still bias model selection.
-- **SHM:** the retained model leaves about 2.59% validation MAPE. Tested refinements did not
-  clear the improvement floor, but the remaining error is not proven irreducible.
+- **SHM:** the shipped hybrid leaves about 2.03% validation MAPE. The Huber correction is fitted
+  on only 64 files and is not interpretable physics; its fresh-seed confirmation reused the same
+  64 files, so residual selection optimism cannot be fully excluded.
+- **sg-experiments rail ideas** (per-car bilateral asymmetry features) were evaluated under the
+  nested protocol and rejected: all five variants scored below the incumbent's 0.823227 mean.
 
 ## References
 

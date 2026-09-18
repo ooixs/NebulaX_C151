@@ -95,6 +95,8 @@ def research_columns(columns, mode):
         physics = ("log_rms", "shock_log_rms", "spec_entropy", "dom_prom", "lb_", "fb_200_400", "fb_400_800", "fb_800_1600")
         return [c for c in columns if c in ("speed", "speed_bin", "side_id") or c.startswith("ratio_") or
                 (any(part in c for part in physics) and c.endswith(("_mean", "_median", "_p90", "_positive_frac")))]
+    if mode == "cardom":
+        return legacy + [c for c in columns if "pair_car_" in c or "pair_speednorm" in c]
     if mode == "paired":
         return [c for c in columns if c.startswith(("own_pair_", "rel_pair_", "ratio_")) or
                 c in ("speed", "speed_bin", "side_id", "own_log_rms_mean", "rel_log_rms_mean")]
@@ -207,7 +209,17 @@ def research(args):
         run.save_json(f"{tag}.json", result)
         np.savez_compressed(run.path / f"{tag}_oof.npz", probabilities=oof, prediction=prediction, labels=y.astype("U7"))
         return result
-    candidates = [
+    if args.candidate_set == "sg":
+        candidates = [
+            dict(name="et_legacy", features="legacy"),
+            dict(name="et_cardom", features="cardom"),
+            dict(name="rf_cardom", kind="rf", features="cardom"),
+            dict(name="lgbm_cardom", kind="lgbm", features="cardom"),
+            dict(name="et_cardom_mf03", features="cardom", max_features=0.3),
+            dict(name="et_cardom_leaf2", features="cardom", leaf=2),
+        ]
+    else:
+        candidates = [
         dict(name="et_legacy", features="legacy"),
         dict(name="et_ratios_identity", features="ratios"),
         dict(name="et_paired_channels", features="all"),
@@ -303,6 +315,7 @@ def main():
     ap.add_argument("--patience", type=int, default=5)
     ap.add_argument("--inner-folds", type=int, default=3)
     ap.add_argument("--confirmation-repeats", type=int, default=2)
+    ap.add_argument("--candidate-set", default="default", choices=["default", "sg"])
     ap.add_argument("--jobs", type=int, default=8)
     ap.add_argument("--ship", action="store_true")
     args = ap.parse_args()
