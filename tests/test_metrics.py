@@ -12,6 +12,158 @@ def test_shm_worked_example():
     assert r2["score"] == 0.0 and r2["mape"] > 1.0
 
 
+@pytest.mark.parametrize("S,D", [
+    ([1.0, 10.0, 100.0], [1.0, 2.0, 10.0]),
+    ([3.0, 15.0, 8.0, 60.0], [1.0, 5.0, 2.0, 10.0]),
+    ([2.0, 4.0, 6.0], [1.0, 2.0, 3.0]),
+])
+def test_shm_scale_minimizes_mape(S, D):
+    from SHM.code.pipeline import fit_C, mape
+
+    S, D = np.asarray(S), np.asarray(D)
+    C = fit_C(S, D)
+    best = min(mape(D, S / candidate) for candidate in S / D)
+    assert mape(D, S / C) == pytest.approx(best)
+    assert fit_C(100 * S, D) == pytest.approx(100 * C)
+    assert fit_C(S, 10 * D) == pytest.approx(C / 10)
+
+
+def test_shm_range_binning_and_model_roundtrip():
+    from SHM.code.pipeline import DamageModel, damage_sum
+
+    cyc = np.array([[1.0, 0.0, 1.0], [2.0, 0.0, 0.5], [4.0, 0.0, 1.0]])
+    original = cyc.copy()
+    assert damage_sum(cyc, 2.0) == pytest.approx(4.75)
+    assert damage_sum(cyc, 2.0, range_bins=2) == pytest.approx(5.5)
+    assert damage_sum(cyc, 2.0, range_bins=2, bin_mode="midpoint") == pytest.approx(2.625)
+    assert damage_sum(cyc, 2.0, range_bin_width=2.0) == pytest.approx(5.5)
+    model = DamageModel(m=2.0, C=2.0, range_bins=2)
+    restored = DamageModel.from_dict(model.to_dict())
+    assert restored.predict_from_cycles(cyc) == pytest.approx(2.75)
+    assert np.array_equal(cyc, original)
+    with pytest.raises(ValueError):
+        damage_sum(cyc, 2.0, range_bins=0)
+    with pytest.raises(ValueError):
+        damage_sum(cyc, 2.0, range_bins=2, range_bin_width=1.0)
+
+
+def test_research_plateau_requires_meaningful_improvement():
+    from common.research import Plateau
+
+    search = Plateau(min_delta=0.005, patience=2)
+    assert search.update([0.79, 0.81])["accepted"]
+    assert not search.update([0.805, 0.807])["accepted"]
+    assert search.stop_reason is None
+    assert search.update([0.83, 0.85])["accepted"]
+    assert search.stale == 0
+    search.update([0.84, 0.85])
+    search.update([0.83, 0.84])
+    assert search.stop_reason == "negligible_improvement"
+    assert search.best_mean == pytest.approx(0.84)
+
+
+def test_research_plateau_ceiling_and_invalid_scores():
+    from common.research import Plateau
+
+    search = Plateau(min_delta=0.002, patience=5)
+    search.update([1.0, 1.0])
+    assert search.stop_reason == "score_ceiling"
+    with pytest.raises(ValueError):
+        Plateau().update([np.nan])
+    with pytest.raises(ValueError):
+        Plateau(patience=0)
+
+
+def test_research_preserves_previous_artifacts(tmp_path):
+    from common.research import ResearchRun
+
+    model = tmp_path / "Door" / "model" / "door_model.joblib"
+    model.parent.mkdir(parents=True)
+    model.write_bytes(b"original")
+    run = ResearchRun("Door", "test-run", root=tmp_path)
+    candidate = run.path / "candidate.joblib"
+    candidate.write_bytes(b"candidate")
+    run.publish(candidate, model)
+    assert model.read_bytes() == b"candidate"
+    assert (run.path / "before" / "Door" / "model" / model.name).read_bytes() == b"original"
+    with pytest.raises(FileExistsError):
+        ResearchRun("Door", "test-run", root=tmp_path)
+
+
+def test_door_nested_threshold_excludes_outer_validation_labels(monkeypatch):
+    from Door.code import train
+
+    class Reference:
+        def fit(self, *args):
+            return self
+
+    class Classifier:
+        def fit(self, X, y):
+            return self
+
+        def predict_proba(self, X):
+            return np.column_stack([1 - X["p"], X["p"]])
+
+    monkeypatch.setattr(train, "ReferenceProfiles", Reference)
+    monkeypatch.setattr(train, "make_model", lambda kind: Classifier())
+    monkeypatch.setattr(train, "features_table", lambda segs, ref: pd.DataFrame({"p": [s.p.iloc[0] for s in segs]}))
+    start = pd.Timestamp("2023-01-01")
+    segs = [pd.DataFrame({"t": [start + pd.Timedelta(seconds=10 * i),
+                                start + pd.Timedelta(seconds=10 * i + 2)], "p": [(i + 1) / 13] * 2})
+            for i in range(12)]
+    labels = ["Normal"] * 6 + [train.POS] * 6
+    before = train.run_cv(segs, labels, 3, "fake", nested=True)
+    after = train.run_cv(segs, [train.POS] * 4 + labels[4:], 3, "fake", nested=True)
+    assert before["folds"][0]["threshold"] == after["folds"][0]["threshold"]
+    for fold in before["folds"]:
+        assert set(fold["threshold_training_indices"]).isdisjoint(fold["validation_indices"])
+
+
+def test_nested_file_folds_keep_outer_validation_out_of_calibration():
+    from common.research import nested_folds
+
+    y = np.array(["Normal"] * 9 + ["Side I"] * 6 + ["Side II"] * 6)
+    folds = nested_folds(y, folds=3, repeats=2, inner_folds=3)
+    for fold in folds:
+        tr, te = set(fold["train"]), set(fold["validation"])
+        assert tr.isdisjoint(te)
+        seen = []
+        for inner_tr, inner_te in fold["inner"]:
+            assert set(inner_tr).isdisjoint(inner_te)
+            assert set(inner_tr) | set(inner_te) == tr
+            assert te.isdisjoint(inner_tr) and te.isdisjoint(inner_te)
+            seen.extend(inner_te)
+        assert sorted(seen) == sorted(tr)
+    for repeat in range(2):
+        assert sorted(i for f in folds if f["repeat"] == repeat for i in f["validation"]) == list(range(len(y)))
+
+
+def test_rail_engineered_features_preserve_legacy_features():
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "Rail Corrugation" / "code" / "pipeline.py"
+    spec = importlib.util.spec_from_file_location("rail_pipeline_test", path)
+    pipeline = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pipeline)
+    side = np.where(np.arange(64) % 2 == 0, 1, 2)
+    rms = np.where(side == 1, 2.0, 1.0)
+    ct = pd.DataFrame(dict(car=np.arange(64) // 8, side=side, rms=rms, log_rms=np.log10(rms),
+                           shock_rms=rms / 2, shock_log_rms=np.log10(rms / 2), dom_lambda=0.1))
+    legacy = pipeline.aggregate(ct, 12.0)
+    enhanced = pipeline.aggregate(ct, 12.0, paired=True)
+    assert set(legacy) <= set(enhanced)
+    assert np.allclose(list(legacy.values()), [enhanced[k] for k in legacy], equal_nan=True)
+    old_rows = pipeline.side_relative_rows(legacy)
+    rows = pipeline.side_relative_rows(enhanced, engineered=True)
+    for old, new in zip(old_rows, rows):
+        assert np.allclose(list(old.values()), [new[k] for k in old], equal_nan=True)
+    assert rows[0]["side_id"] == 1 and rows[1]["side_id"] == 2
+    assert rows[0]["ratio_rms_mean"] == pytest.approx(1 / 3)
+    assert rows[1]["ratio_rms_mean"] == pytest.approx(-1 / 3)
+    assert rows[0]["own_pair_log_rms_mean"] == pytest.approx(np.log10(2))
+
+
 def test_acv_worked_example():
     ranked = "03|01|05|02|04|06|07|08"
     assert acv_rank_score(ranked, "03") == 1.0

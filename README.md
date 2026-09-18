@@ -51,9 +51,9 @@ verified byte-identical up to CRLF line endings.
 
 - **GPU:** NVIDIA GeForce RTX 4090, 24 GB, driver 595.79 / CUDA 13.2 — available but not
   required; every model in the Methodology runs on CPU at these data sizes.
-- **Python is not installed** on the dev machine (no `python`, `python3` or `py`). Install Python
-  3.11/3.12 and create a venv before starting; add a CUDA build of `torch` only if GPU MiniROCKET
-  is wanted.
+- **Python:** the existing `.venv` uses Python 3.12.14. On Windows, run it as
+  `& ".\.venv\Scripts\python.exe"`; the system `python` command is not required.
+  The current pipelines use CPU-based NumPy/scikit-learn and do not need PyTorch.
 
 ## Submission packaging (team name: `C151`)
 
@@ -382,7 +382,7 @@ Never standardise stress per file; never concatenate files.
 #### 4.3 Calibration (minimise MAPE directly)
 
 Parameters: `m` (grid 2–10, step 0.25), `C` (closed form given `m`: the MAPE-optimal scalar is the
-weighted median of `S_m / D` with weights `1/D`), plus these **discrete conventions**, each a
+weighted median of `S_m / D` with weights `S_m / D`), plus these **discrete conventions**, each a
 switch evaluated in the grid:
 
 | Switch | Options |
@@ -621,7 +621,8 @@ roughly −20…+40, ~180 k rainflow cycles per file, ≤ 26 residue half-cycles
 
 **Model.** ASTM E1049 rainflow (`rainflow.extract_cycles`) → `S_m = Σ countᵢ · (rangeᵢ/2)^m` →
 `D̂ = S_m / C`. `C` has a closed-form MAPE-optimal solution (weighted median of `S_m / D` with
-weights `1/D`). A grid of 1,968 conventions — `m` ∈ 3.0…7.0 step 0.1, residue as half / full /
+weights `S_m / D`). The SHM scores below predate this calibration correction and await revalidation.
+A grid of 1,968 conventions — `m` ∈ 3.0…7.0 step 0.1, residue as half / full /
 dropped cycles, endurance cut-off ∈ {0, 0.5, 1, 2}, Goodman mean-stress correction with
 σ_u ∈ {none, 100, 200, 400} — was scored by MAPE, selecting the simplest configuration within
 0.002 of the best.

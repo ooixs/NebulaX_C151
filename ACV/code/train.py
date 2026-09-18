@@ -1,6 +1,7 @@
 """ACV: leave-one-case-out evaluation of scoring configurations; saves the chosen config + response model."""
 from __future__ import annotations
 
+import argparse
 import glob
 import itertools
 import json
@@ -24,7 +25,67 @@ COMPONENTS = ["peer_dev_mean", "set_err_p95", "peer_dev_persist", "peer_dev_pos_
 GRID = [0.0, 0.5, 1.0]
 
 
+def research(args):
+    from common.research import ResearchRun
+
+    run = ResearchRun("ACV", args.run_id, args.min_delta, args.patience)
+    labels = pd.read_csv(DATA / "Train_Labels.csv", dtype=str).set_index("filename")["faulty_car"]
+    cases = {p.name: load_case(p) for p in sorted((DATA / "Train").glob("*.xlsx"))}
+    healthy = {name: prepare(case[0])[lambda d: d["car"] != labels[name]] for name, case in cases.items()}
+    features, folds = {}, []
+    for held, (long, cars, _) in cases.items():
+        train_cases = [name for name in cases if name != held]
+        response = ResponseModel().fit([healthy[name] for name in train_cases])
+        features[held] = car_features(long, cars, response)
+        folds.append(dict(validation_case=held, training_cases=train_cases))
+    peer_scores = {name: acv_rank_score(score_cars(features[name], {"peer_dev_mean": 1.0}).index, labels[name])
+                   for name in cases}
+    run.save_json("folds.json", folds)
+    candidates = [
+        ("fixed_physics", {"peer_dev_mean": 1.0, "p_high_def": 1.0}),
+        ("peer_only", {"peer_dev_mean": 1.0}),
+        ("lower_pressure_weight", {"peer_dev_mean": 1.0, "p_high_def": 0.5}),
+        ("higher_pressure_weight", {"peer_dev_mean": 1.0, "p_high_def": 2.0}),
+        ("setpoint_and_pressure", {"set_err_p95": 1.0, "p_high_def": 1.0}),
+        ("persistence_and_pressure", {"peer_dev_persist": 1.0, "p_high_def": 1.0}),
+        ("response_and_pressure", {"resid_p90": 1.0, "p_high_def": 1.0}),
+    ]
+    selected = None
+    for name, weights in candidates:
+        rankings = {case: score_cars(features[case], weights).index.tolist() for case in cases}
+        scores = {case: acv_rank_score(rankings[case], labels[case]) for case in cases}
+        result = run.record(name, list(scores.values()), weights=weights, case_scores=scores, rankings=rankings)
+        if result["accepted"]:
+            selected = weights
+        if run.tracker.stop_reason:
+            break
+    if run.tracker.stop_reason is None:
+        run.finish(published=False)
+        raise RuntimeError("ACV candidate list exhausted before convergence; extend the search")
+    response = ResponseModel().fit(list(healthy.values()))
+    artifact = dict(weights=selected, response=response, components=COMPONENTS,
+                    research_run=run.run_id, validation="leave-one-case-out, fixed scoring weights")
+    output = run.path / "acv_model.joblib"
+    joblib.dump(artifact, output)
+    if args.ship:
+        run.publish(output, MODEL / output.name)
+    run.finish(published=args.ship, model=output.name, training_cases=len(cases),
+               peer_only_mean=float(np.mean(list(peer_scores.values()))),
+               limitation="Only six cases; pressure information occurs in one rich-format case. "
+                          "The existing physics scorer was previously developed on these cases, so ceiling CV is not an independent test score.")
+
+
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--research", action="store_true")
+    ap.add_argument("--run-id")
+    ap.add_argument("--min-delta", type=float, default=0.002)
+    ap.add_argument("--patience", type=int, default=5)
+    ap.add_argument("--ship", action="store_true")
+    args = ap.parse_args()
+    if args.research:
+        research(args)
+        return
     WEIGHTS.mkdir(parents=True, exist_ok=True); MODEL.mkdir(parents=True, exist_ok=True)
     labels = pd.read_csv(DATA / "Train_Labels.csv", dtype=str).set_index("filename")["faulty_car"]
     cases = {}

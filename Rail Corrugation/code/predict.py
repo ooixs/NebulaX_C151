@@ -36,9 +36,10 @@ def _natural_key(p: Path):
 def predict_one(path: Path, with_proba: bool = False):
     art = _artefact()
     ct, v = file_channel_table(path)
-    feats = aggregate(art["ref"].excess(ct, v), v)
+    engineered = art.get("engineered_features", False)
+    feats = aggregate(art["ref"].excess(ct, v), v, paired=engineered)
     if art["choice"] == "side_detector":
-        r1, r2 = side_relative_rows(feats)
+        r1, r2 = side_relative_rows(feats, engineered=engineered)
         R = pd.DataFrame([r1, r2]).reindex(columns=art["det_cols"]).fillna(-9)
         p1, p2 = art["det"].predict_proba(R)[:, 1]
         label = "Normal" if max(p1, p2) < art["tau"] else ("Side I" if p1 >= p2 else "Side II")

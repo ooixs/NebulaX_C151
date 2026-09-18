@@ -156,8 +156,9 @@ cycles, ≤ 26 residue half-cycles). Labels 0.029–0.928, no zeros.
 **Model.** The Info Kit says the labels come from rainflow counting + Miner's rule with
 σ^m · N = C, so this is a physics-recovery problem. ASTM E1049 rainflow → `S_m = Σ countᵢ ·
 (rangeᵢ/2)^m` → `D̂ = S_m / C`. Because the judge metric is MAPE, `C` is fitted as the
-MAPE-optimal scalar (weighted median of `S_m / D` with weights 1/D; de Myttenaere et al. 2016),
-not by log-space least squares.
+MAPE-optimal scalar (weighted median of `S_m / D` with weights `S_m / D`; de Myttenaere et al. 2016),
+not by log-space least squares. The SHM scores below predate this calibration correction and await
+revalidation.
 
 A grid of 1,968 conventions — m ∈ 3.0…7.0 step 0.1, residue as half / full / dropped cycles,
 endurance cut-off ∈ {0, 0.5, 1, 2}, Goodman correction with σ_u ∈ {none, 100, 200, 400} — was

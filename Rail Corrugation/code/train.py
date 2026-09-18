@@ -75,11 +75,240 @@ def tune_3class(proba: np.ndarray, y: np.ndarray):
     return best
 
 
+def research_table(chan_tables, speeds, labels, train_indices):
+    ref = NormalReference().fit([chan_tables[i] for i in train_indices],
+                                [speeds[i] for i in train_indices], [labels[i] for i in train_indices])
+    rows = []
+    for ct, v in zip(chan_tables, speeds):
+        features = aggregate(ref.excess(ct, v), v, paired=True)
+        rows.extend(side_relative_rows(features, engineered=True))
+    return ref, pd.DataFrame(rows).fillna(-9).astype(np.float32)
+
+
+def research_columns(columns, mode):
+    legacy = [c for c in columns if not c.startswith(("own_pair_", "rel_pair_", "ratio_")) and c != "side_id"]
+    if mode == "legacy":
+        return legacy
+    if mode == "ratios":
+        return legacy + [c for c in columns if c.startswith("ratio_") or c == "side_id"]
+    if mode == "compact":
+        physics = ("log_rms", "shock_log_rms", "spec_entropy", "dom_prom", "lb_", "fb_200_400", "fb_400_800", "fb_800_1600")
+        return [c for c in columns if c in ("speed", "speed_bin", "side_id") or c.startswith("ratio_") or
+                (any(part in c for part in physics) and c.endswith(("_mean", "_median", "_p90", "_positive_frac")))]
+    if mode == "paired":
+        return [c for c in columns if c.startswith(("own_pair_", "rel_pair_", "ratio_")) or
+                c in ("speed", "speed_bin", "side_id", "own_log_rms_mean", "rel_log_rms_mean")]
+    return list(columns)
+
+
+def research_model(config, seed, jobs):
+    options = dict(n_estimators=config.get("trees", 800), class_weight=config.get("class_weight", "balanced_subsample"),
+                   min_samples_leaf=config.get("leaf", 1), max_features=config.get("max_features", "sqrt"),
+                   random_state=seed, n_jobs=jobs)
+    kind = config.get("kind", "et")
+    if kind == "et":
+        return ExtraTreesClassifier(**options)
+    if kind == "rf":
+        return RandomForestClassifier(**options)
+    if kind == "svc":
+        from sklearn.pipeline import make_pipeline
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.svm import SVC
+        return make_pipeline(StandardScaler(), SVC(C=config.get("C", 1.0), class_weight="balanced",
+                                                   probability=True, random_state=seed))
+    if kind == "lgbm":
+        from lightgbm import LGBMClassifier
+        return LGBMClassifier(n_estimators=300, learning_rate=0.03, num_leaves=7, min_child_samples=10,
+                              reg_lambda=5.0, colsample_bytree=0.8, class_weight="balanced",
+                              random_state=seed, n_jobs=jobs, verbosity=-1)
+    raise ValueError(kind)
+
+
+def tune_side_threshold(labels, probabilities):
+    grid = np.linspace(0.1, 0.9, 33)
+    scores = np.array([rail_macro_f1(labels, decode_side(probabilities[:, 0], probabilities[:, 1], tau))["macro_f1"]
+                       for tau in grid])
+    best = np.flatnonzero(scores >= scores.max() - 1e-12)
+    return float(grid[best[(len(best) - 1) // 2]]), float(scores.max())
+
+
+def research(args):
+    from sklearn.model_selection import StratifiedKFold
+    from common.research import ResearchRun, fingerprint, nested_folds
+
+    run = ResearchRun("Rail Corrugation", args.run_id, args.min_delta, args.patience)
+    lab = pd.read_csv(DATA / "Train_Labels.csv")
+    y = lab.label.to_numpy()
+    n = len(y)
+    cache_path = WEIGHTS / "train_channel_tables.joblib"
+    cached = joblib.load(cache_path)
+    if len(cached) != n:
+        raise ValueError("channel cache does not match the labelled files")
+    CT, V = [c for c, _ in cached], [v for _, v in cached]
+    checked = sorted({0, n // 2, n - 1})
+    for i in checked:
+        ct, v = file_channel_table(DATA / "Train" / lab.filename.iloc[i])
+        if not np.isclose(v, V[i]) or list(ct.columns) != list(CT[i].columns) or not np.allclose(ct, CT[i], equal_nan=True):
+            raise ValueError("stale channel cache; rebuild before research")
+    run.save_json("inputs.json", dict(labels_sha256=fingerprint(DATA / "Train_Labels.csv"),
+                  channel_cache_sha256=fingerprint(cache_path), checked_files=lab.filename.iloc[checked].tolist(),
+                  files=lab.filename.tolist(), training_only=True))
+    folds = nested_folds(y, args.folds, args.repeats, args.inner_folds)
+    run.save_json("folds.json", folds)
+    tables = {}
+    def prime(protocol):
+        pending = {}
+        for fold in protocol:
+            for indices in [fold["train"]] + [pair[0] for pair in fold["inner"]]:
+                key = tuple(indices)
+                if key not in tables:
+                    pending[key] = indices
+        if not pending:
+            return
+        print(f"Preparing {len(pending)} fold-local reference/feature tables ...", flush=True)
+        def table(indices):
+            return research_table(CT, V, y, indices)[1]
+        values = Parallel(n_jobs=args.jobs)(delayed(table)(indices) for indices in pending.values())
+        tables.update(zip(pending, values))
+        print(f"Feature tables ready ({len(tables)} cached)", flush=True)
+    prime(folds)
+    row_indices = lambda indices: (2 * np.asarray(indices)[:, None] + np.arange(2)).ravel()
+    side_y = (y[:, None] == np.array(["Side I", "Side II"])).astype(int).ravel()
+    def evaluate(config, protocol, tag):
+        repeats = max(f["repeat"] for f in protocol) + 1
+        oof = np.zeros((repeats, n, 2))
+        prediction = np.full((repeats, n), "", dtype="<U7")
+        reports = []
+        for fold in protocol:
+            k, repeat, tr, te = fold["fold"], fold["repeat"], fold["train"], fold["validation"]
+            R = tables[tuple(tr)]
+            cols = research_columns(R.columns, config["features"])
+            clf = research_model(config, k, args.jobs).fit(R.iloc[row_indices(tr)][cols], side_y[row_indices(tr)])
+            probabilities = clf.predict_proba(R.iloc[row_indices(te)][cols])[:, 1].reshape(-1, 2)
+            calibration = np.zeros((n, 2))
+            for j, (inner_tr, inner_te) in enumerate(fold["inner"]):
+                Ri = tables[tuple(inner_tr)]
+                model = research_model(config, 10000 + 10 * k + j, args.jobs)
+                model.fit(Ri.iloc[row_indices(inner_tr)][cols], side_y[row_indices(inner_tr)])
+                calibration[inner_te] = model.predict_proba(Ri.iloc[row_indices(inner_te)][cols])[:, 1].reshape(-1, 2)
+            tau, inner_score = tune_side_threshold(y[tr], calibration[tr])
+            oof[repeat, te] = probabilities
+            prediction[repeat, te] = decode_side(probabilities[:, 0], probabilities[:, 1], tau)
+            reports.append(dict(fold=k, repeat=repeat, threshold=tau, inner_calibration_macro_f1=inner_score,
+                                validation_indices=te.tolist(), threshold_training_indices=tr.tolist()))
+            if (k + 1) % args.folds == 0:
+                print(f"  {tag}: {k + 1}/{len(protocol)} outer folds", flush=True)
+        scores = [rail_macro_f1(y, p)["macro_f1"] for p in prediction]
+        per_class = {c: float(np.mean([rail_macro_f1(y, p)["per_class"][c] for p in prediction])) for c in CLASSES}
+        calibrated = [tune_side_threshold(y, p) for p in oof]
+        result = dict(scores=scores, mean=float(np.mean(scores)), std=float(np.std(scores)), per_class=per_class,
+                      final_tau=float(np.median([t for t, _ in calibrated])),
+                      optimistic_same_oof_tuned_scores=[s for _, s in calibrated], folds=reports)
+        run.save_json(f"{tag}.json", result)
+        np.savez_compressed(run.path / f"{tag}_oof.npz", probabilities=oof, prediction=prediction, labels=y.astype("U7"))
+        return result
+    candidates = [
+        dict(name="et_legacy", features="legacy"),
+        dict(name="et_ratios_identity", features="ratios"),
+        dict(name="et_paired_channels", features="all"),
+        dict(name="et_compact_physics", features="compact"),
+        dict(name="rf_compact_physics", kind="rf", features="compact"),
+        dict(name="svc_compact_C1", kind="svc", features="compact", C=1.0),
+        dict(name="et_paired_unweighted", features="all", class_weight=None),
+        dict(name="lgbm_compact", kind="lgbm", features="compact"),
+        dict(name="et_paired_leaf2", features="all", leaf=2),
+        dict(name="svc_compact_C10", kind="svc", features="compact", C=10.0),
+        dict(name="et_paired_mf03", features="all", max_features=0.3),
+        dict(name="et_spatial_only", features="paired"),
+        dict(name="et_ratios_leaf3", features="ratios", leaf=3),
+        dict(name="svc_ratios_C1", kind="svc", features="ratios", C=1.0),
+        dict(name="et_compact_unweighted", features="compact", class_weight=None),
+        dict(name="et_ratios_1600trees", features="ratios", trees=1600),
+        dict(name="svc_compact_C01", kind="svc", features="compact", C=0.1),
+        dict(name="rf_paired_leaf2", kind="rf", features="all", leaf=2, max_features=0.3),
+    ]
+    results, accepted = {}, []
+    for trial, config in enumerate(candidates):
+        name = config["name"]
+        result = evaluate(config, folds, f"trial_{trial:02d}_{name}")
+        results[name] = result
+        record = run.record(name, result["scores"], parameters=config, per_class=result["per_class"],
+                            optimistic_same_oof_tuned_scores=result["optimistic_same_oof_tuned_scores"])
+        if record["accepted"]:
+            accepted.append(config)
+        if run.tracker.stop_reason:
+            break
+    if run.tracker.stop_reason is None:
+        run.finish(published=False)
+        raise RuntimeError("Rail candidate list exhausted before convergence; extend the search")
+    confirmation_folds = nested_folds(y, args.folds, args.confirmation_repeats, args.inner_folds, seed=2026)
+    run.save_json("confirmation_folds.json", confirmation_folds)
+    prime(confirmation_folds)
+    baseline = candidates[0]
+    baseline_confirmation = evaluate(baseline, confirmation_folds, "confirmation_baseline")
+    confirmation = {baseline["name"]: baseline_confirmation}
+    selected = baseline
+    for config in reversed(accepted[1:]):
+        result = evaluate(config, confirmation_folds, f"confirmation_{config['name']}")
+        gain = result["mean"] - baseline_confirmation["mean"]
+        required = max(args.min_delta, baseline_confirmation["std"])
+        consistent = bool(np.all(np.array(result["scores"]) > np.array(baseline_confirmation["scores"])))
+        confirmation[config["name"]] = dict(**result, gain=gain, required_gain=required, accepted=consistent and gain > required)
+        if consistent and gain > required:
+            selected = config
+            break
+    run.save_json("confirmation.json", confirmation)
+    ordered = np.argsort(lab.filename.str.extract(r"(\d+)", expand=False).astype(int).to_numpy())
+    blocked = []
+    for k, te in enumerate(np.array_split(ordered, args.folds)):
+        tr = np.setdiff1d(np.arange(n), te)
+        inner = StratifiedKFold(args.inner_folds, shuffle=True, random_state=500 + k)
+        pairs = [(tr[a], tr[b]) for a, b in inner.split(np.zeros(len(tr)), y[tr])]
+        blocked.append(dict(fold=k, repeat=0, train=tr, validation=te, inner=pairs))
+    run.save_json("blocked_folds.json", blocked)
+    prime(blocked)
+    block_base = evaluate(baseline, blocked, "blocked_baseline")
+    block_selected = block_base if selected == baseline else evaluate(selected, blocked, "blocked_selected")
+    block_rejected = block_selected["mean"] < block_base["mean"] - 0.02
+    if block_rejected:
+        selected, block_selected = baseline, block_base
+    final_result = results[selected["name"]]
+    ref, R = research_table(CT, V, y, np.arange(n))
+    cols = research_columns(R.columns, selected["features"])
+    detector = research_model(selected, 0, args.jobs).fit(R[cols], side_y)
+    artifact = dict(choice="side_detector", ref=ref, det=detector, det_cols=cols, tau=final_result["final_tau"],
+                    engineered_features=selected["features"] != "legacy", cv_macro_f1=final_result["mean"],
+                    research_run=run.run_id, parameters=selected, validation="nested reference and threshold CV")
+    output = run.path / "rail_model.joblib"
+    joblib.dump(artifact, output)
+    joblib.dump(tables, run.path / "fold_feature_tables.joblib", compress=3)
+    if args.ship:
+        run.publish(output, MODEL / output.name)
+    run.finish(published=args.ship, model=output.name, retained_name=selected["name"],
+               retained_cv_mean=final_result["mean"], retained_cv_std=final_result["std"],
+               retained_confirmation_mean=confirmation[selected["name"]]["mean"],
+               blocked_cv=block_selected["mean"], blocked_baseline_cv=block_base["mean"],
+               rejected_for_blocked_regression=block_rejected, tau=artifact["tau"],
+               per_class=final_result["per_class"], training_files=n,
+               limitation="Repeated CV uses the same 272 files, including only 14 Side I examples; no independent labelled test set is available.")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--repeats", type=int, default=3)
     ap.add_argument("--folds", type=int, default=5)
+    ap.add_argument("--research", action="store_true")
+    ap.add_argument("--run-id")
+    ap.add_argument("--min-delta", type=float, default=0.005)
+    ap.add_argument("--patience", type=int, default=5)
+    ap.add_argument("--inner-folds", type=int, default=3)
+    ap.add_argument("--confirmation-repeats", type=int, default=2)
+    ap.add_argument("--jobs", type=int, default=8)
+    ap.add_argument("--ship", action="store_true")
     args = ap.parse_args()
+    if args.research:
+        research(args)
+        return
     WEIGHTS.mkdir(parents=True, exist_ok=True); MODEL.mkdir(parents=True, exist_ok=True)
 
     lab = pd.read_csv(DATA / "Train_Labels.csv")

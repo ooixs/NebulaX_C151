@@ -125,7 +125,7 @@ class NormalReference:
 AGG_FEATURES = None  # filled lazily
 
 
-def aggregate(ct: pd.DataFrame, v: float) -> dict:
+def aggregate(ct: pd.DataFrame, v: float, paired: bool = False) -> dict:
     """Side-level aggregates + cross-side differences + per-car max excess."""
     feats = {"speed": v, "speed_bin": speed_bin(v)}
     cols = [c for c in ct.columns if c not in ("car", "side")]
@@ -156,6 +156,24 @@ def aggregate(ct: pd.DataFrame, v: float) -> dict:
         carmax = ct[ct.side == s].groupby("car")[ex].max()
         feats[f"s{s}_carmax_top1"] = carmax.max()
         feats[f"s{s}_carmax_top2"] = carmax.nlargest(2).mean()
+    if paired:
+        pair_cols = [c for c in cols if c.startswith(("fb_", "lb_")) or c in
+                     ("log_rms", "shock_log_rms", "spec_entropy", "spec_centroid", "kurt", "crest", "shock_kurt")]
+        left = ct.loc[ct.side == 1, pair_cols].to_numpy(float)
+        right = ct.loc[ct.side == 2, pair_cols].to_numpy(float)
+        for s, delta in ((1, left - right), (2, right - left)):
+            valid = np.isfinite(delta).any(axis=0)
+            values = delta[:, valid]
+            if not valid.any():
+                continue
+            stats = dict(mean=np.nanmean(values, axis=0), median=np.nanmedian(values, axis=0),
+                         p90=np.nanpercentile(values, 90, axis=0), mx=np.nanmax(values, axis=0),
+                         std=np.nanstd(values, axis=0),
+                         positive_frac=np.sum(values > 0, axis=0) / np.sum(np.isfinite(values), axis=0))
+            for suffix, a in stats.items():
+                full = np.full(len(pair_cols), np.nan)
+                full[valid] = a
+                feats.update({f"s{s}_pair_{c}_{suffix}": value for c, value in zip(pair_cols, full)})
     return feats
 
 
@@ -165,7 +183,7 @@ def file_channel_table(path: str | Path) -> tuple[pd.DataFrame, float]:
     return channel_features(vib, shock, v), v
 
 
-def side_relative_rows(feats: dict) -> list[dict]:
+def side_relative_rows(feats: dict, engineered: bool = False) -> list[dict]:
     """Two rows per file (own side vs other side) for the shared per-side detector."""
     rows = []
     for own, oth in ((1, 2), (2, 1)):
@@ -176,5 +194,11 @@ def side_relative_rows(feats: dict) -> list[dict]:
                 r[f"own_{base}"] = val
                 other = feats.get(f"s{oth}_{base}", np.nan)
                 r[f"rel_{base}"] = val - other if isinstance(val, (int, float, np.floating)) else np.nan
+        if engineered:
+            r["side_id"] = own
+            for base in ("rms_mean", "rms_p75", "rms_max", "shock_rms_mean", "shock_rms_p75", "shock_rms_max",
+                         "kurt_mean", "crest_mean", "shock_peaks_mean", "shock_kurt_mean"):
+                a, b = feats.get(f"s{own}_{base}", np.nan), feats.get(f"s{oth}_{base}", np.nan)
+                r[f"ratio_{base}"] = (a - b) / (abs(a) + abs(b) + 1e-9)
         rows.append(r)
     return rows
