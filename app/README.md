@@ -2,6 +2,10 @@
 
 A local, responsive train condition monitoring app for Team C151. All application source is in this folder. It integrates the existing models through `common.inference.predict(subsystem, input_path)`; it does not change trained models, thresholds or prediction logic.
 
+For a private hosted installation, see the repository's
+[Google Cloud Run deployment guide](../docs/cloud-run-deployment.md). Local operation remains
+the default when sensor files must stay on the operator's computer.
+
 ## Start
 
 From the repository root, using Python **3.11 or newer**:
@@ -44,7 +48,7 @@ Model setup reports a missing file, invalid manifest or checksum mismatch. Resto
 4. Select Technical record (JSON) if you need input hashes, model version, timing and output evidence.
 5. Select Download submission, then Download ZIP file to save `predictions.zip`. Live batches are combined by subsystem. Repeated filenames use their newest prediction; Door uses only the newest stream. Contributing batches must use the same model hash. The ZIP has only the official prediction CSVs at its top level.
 
-The most recent 40 runs are kept in server memory and restored after browser refresh. They disappear when the server stops. Input uploads are placed in an isolated temporary directory and deleted after inference. Download records and exports before stopping. The server binds only to 127.0.0.1 and is intended for one operator, not shared or public hosting.
+The most recent 40 runs are kept in server memory and restored after browser refresh. They disappear when the server stops or a cloud instance is replaced. Input uploads are placed in an isolated temporary directory and deleted after inference. Download records and exports before stopping. In local mode, the server binds only to 127.0.0.1 and is intended for one operator. The Cloud Run guide documents the separate private hosted mode and its limits.
 
 “View example results” reads the repository's existing `predictions/` CSVs. It does **not** run a model or verify the historic model/input provenance. These results are visibly labelled and cannot be included in a submission archive. A packaged app without these CSVs still supports live inference.
 

@@ -35,10 +35,10 @@ class ContractTests(unittest.TestCase):
     def setUp(self):
         server.RUNS.clear()
 
-    def request(self, path, body, content_type='application/json', origin=None):
+    def request(self, path, body, content_type='application/json', origin=None, host='127.0.0.1:8765'):
         handler = object.__new__(server.Handler)
         handler.path = path
-        handler.headers = {'Content-Length':str(len(body)), 'Content-Type':content_type, 'Host':'127.0.0.1:8765'}
+        handler.headers = {'Content-Length':str(len(body)), 'Content-Type':content_type, 'Host':host}
         if origin:
             handler.headers['Origin'] = origin
         handler.rfile = io.BytesIO(body)
@@ -66,6 +66,23 @@ class ContractTests(unittest.TestCase):
     def test_cross_origin_and_empty_requests_rejected(self):
         self.assertEqual(self.request('/api/export', b'{}', origin='https://unrelated.example')[0], 403)
         self.assertEqual(self.request('/api/analyze', b'')[0], 413)
+
+    def test_https_same_origin_is_accepted(self):
+        self.assertNotEqual(
+            self.request('/api/export', b'{}', origin='https://127.0.0.1:8765')[0],
+            403,
+        )
+
+    def test_loopback_proxy_origin_is_accepted(self):
+        self.assertNotEqual(
+            self.request(
+                '/api/export',
+                b'{}',
+                origin='http://127.0.0.1:18080',
+                host='nebulax-control-room.example.run.app',
+            )[0],
+            403,
+        )
 
     def test_upload_boundaries(self):
         for key, files in [

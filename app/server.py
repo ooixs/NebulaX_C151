@@ -8,6 +8,7 @@ import io
 import json
 import logging
 import math
+import os
 import re
 import sys
 import tempfile
@@ -268,7 +269,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             origin = self.headers.get("Origin")
-            if origin and origin != f"http://{self.headers.get('Host')}":
+            parsed_origin = urlparse(origin) if origin else None
+            same_host = (parsed_origin and parsed_origin.scheme in ("http", "https")
+                         and parsed_origin.netloc == self.headers.get("Host"))
+            local_proxy = (parsed_origin and parsed_origin.scheme == "http"
+                           and parsed_origin.hostname in ("127.0.0.1", "localhost", "::1"))
+            if origin and not (same_host or local_proxy):
                 return self.send(403, dict(error="Requests must come from this local app."))
             size = int(self.headers.get("Content-Length", "0"))
             if size <= 0 or size > MAX_UPLOAD + 1024 * 1024:
@@ -302,10 +308,11 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"))
+    parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8765")))
     args = parser.parse_args()
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
-    print(f"NebulaX Control Room → http://127.0.0.1:{args.port}", flush=True)
+    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    print(f"NebulaX Control Room → http://{args.host}:{args.port}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

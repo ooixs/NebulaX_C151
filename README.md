@@ -30,6 +30,11 @@ On Windows, activate the environment with `.venv\Scripts\activate` and use `pyth
 The app runs locally and does not require an internet connection. During normal use, an operator
 does not need to use the command line after the server has started.
 
+For a private hosted deployment, follow the
+[Google Cloud Run deployment guide](docs/cloud-run-deployment.md). It covers authentication,
+Cloud Build, Artifact Registry, deployment verification, private browser access, updates,
+rollback, upload limits, and cleanup.
+
 ## Using the app
 
 1. Select Doors, Air conditioning, Rail condition, or Structural health.
@@ -111,6 +116,8 @@ confirmed diagnoses or remaining-life forecasts.
 ├── docs/references/              # Organisers' subsystem information kits
 ├── predictions/                  # Current prediction CSVs
 ├── tests/                        # Metric, inference and packaging tests
+├── Dockerfile                    # Cloud Run container image
+├── .gcloudignore                 # Minimal allowlist sent to Cloud Build
 ├── package.py                    # Builds the C151 submission directory
 └── writeup_*.md                  # Detailed technical write-ups
 ```
@@ -180,3 +187,7 @@ each subsystem. Add the required demo video to the resulting directory separatel
   assets and operating periods.
 - The local server binds to `127.0.0.1` and is intended for one operator. It is not configured as
   a public or multi-user service.
+- Cloud Run run history is held in instance memory. It can disappear after scale-to-zero,
+  restart, revision replacement, or routing to another instance, so download results promptly.
+- The Cloud Run HTTP/1 request limit is lower than the app's 120 MB local batch limit. Follow the
+  cloud deployment guide and split cloud uploads into batches below 30 MiB.
