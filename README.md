@@ -38,15 +38,17 @@ rollback, upload limits, and cleanup.
 ## Using the app
 
 1. Select Doors, Air conditioning, Rail condition, or Structural health.
-2. Drag in the original sensor files. The app shows the required file type and format.
-3. Select **Check these files**.
-4. Review the visual summary, detailed results, and suggested inspection action.
-5. Download the result CSV or technical record. Results from compatible live runs can also be
-   combined into `predictions.zip`.
+2. Record the asset, component/location, acquisition time, and work order.
+3. Add the original sensor files and select **Check files**.
+4. Select an individual movement, car, or recording to compare its key measurements with the
+   current recording or batch.
+5. Record the inspection status and note in the durable Review queue, or download the inspection
+   report and official result CSV.
 
 Door accepts one continuous CSV stream. ACV accepts Excel files. Rail Corrugation and SHM accept
-one or more CSV files. The app validates uploads before inference and reports format problems in
-plain language.
+one or more CSV files. The app validates uploads before inference, preserves valid files when one
+batch item is malformed, and reports format problems in plain language. Peer comparisons are
+descriptive evidence, not fleet thresholds or confirmed faults.
 
 See [the app guide](app/README.md) for the full operator workflow, upload limits, and packaging
 instructions.
@@ -187,7 +189,7 @@ each subsystem. Add the required demo video to the resulting directory separatel
   assets and operating periods.
 - The local server binds to `127.0.0.1` and is intended for one operator. It is not configured as
   a public or multi-user service.
-- Cloud Run run history is held in instance memory. It can disappear after scale-to-zero,
-  restart, revision replacement, or routing to another instance, so download results promptly.
+- Local history is stored in SQLite. Cloud Run's filesystem is instance-ephemeral, so hosted
+  cross-revision history still requires a durable mounted or external store.
 - The Cloud Run HTTP/1 request limit is lower than the app's 120 MB local batch limit. Follow the
   cloud deployment guide and split cloud uploads into batches below 30 MiB.

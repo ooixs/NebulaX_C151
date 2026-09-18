@@ -185,6 +185,22 @@ class ContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'valid review'):
             server.update_review('missing', 'not-a-status', '')
 
+    def test_inspection_report_contains_context_results_and_follow_up(self):
+        run = server.save_run(
+            'rail',
+            [{'file_id':'track.csv','prediction':'Side I'}],
+            [],
+            {'run_id':'model-1', 'sha256':'abc'},
+            0,
+            context={'asset_id':'Train 151', 'location':'km 4.2', 'work_order':'WO-9'},
+        )
+        server.update_review(run['id'], 'acknowledged', 'Inspect Side I.')
+        report = server.inspection_report(server.get_run(run['id'])).decode()
+        self.assertIn('Asset or train: Train 151', report)
+        self.assertIn('prediction: Side I', report)
+        self.assertIn('Technician note: Inspect Side I.', report)
+        self.assertIn('not a fit-for-service decision', report)
+
     def test_no_result_if_model_changes_during_run(self):
         stub = types.ModuleType('common.inference')
         stub.predict = lambda *_: Frame([{'file_id':'a.csv','prediction':'Normal'}])

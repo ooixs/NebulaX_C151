@@ -45,7 +45,7 @@ MODEL_FILES = {
     "Rail Corrugation": ("rail_model.joblib",),
     "SHM": ("shm_model.json", "shm_model.joblib"),
 }
-IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", ".gitkeep", ".ipynb_checkpoints")
+IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", ".gitkeep", ".ipynb_checkpoints", ".nebulax")
 
 
 def copytree(src: Path, dst: Path) -> bool:

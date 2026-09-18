@@ -324,6 +324,38 @@ def public_run(run):
     return {key: value for key, value in run.items() if key != "csv"}
 
 
+def inspection_report(run):
+    context = run.get("context", {})
+    review = run.get("review") or {}
+    lines = [
+        "NEBULAX CONDITION CHECK",
+        "",
+        f"System: {SYSTEMS[run['system']]['name']}",
+        f"Asset or train: {context.get('asset_id') or 'Not recorded'}",
+        f"Location or component: {context.get('location') or 'Not recorded'}",
+        f"Recording time: {context.get('collected_at') or 'Not recorded'}",
+        f"Work order: {context.get('work_order') or 'Not recorded'}",
+        f"Analysis time (UTC): {run['created']}",
+        f"Model version: {(run.get('model') or {}).get('run_id') or 'Not recorded'}",
+        "",
+        "RESULTS",
+    ]
+    for row in run["rows"]:
+        lines.append(" | ".join(f"{field}: {row.get(field)}" for field in SYSTEMS[run["system"]]["columns"]))
+    if run.get("failures"):
+        lines.extend(["", "FILES NOT CHECKED"])
+        lines.extend(f"{failure['name']}: {failure['error']}" for failure in run["failures"])
+    lines.extend([
+        "",
+        "FOLLOW-UP",
+        f"Status: {review.get('status') or 'Not recorded'}",
+        f"Technician note: {review.get('note') or 'Not recorded'}",
+        "",
+        "This report supports inspection planning. It is not a fit-for-service decision.",
+    ])
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
 def export_zip(ids):
     if not isinstance(ids, list) or not ids or len(ids) > HISTORY_LIMIT or any(not isinstance(i, str) for i in ids):
         raise ValueError("Check your uploaded files before downloading a submission.")
@@ -397,13 +429,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, public_run(save_run(key, rows, [], None, 0, True)))
             if path.path.startswith("/api/runs/"):
                 parts = path.path.strip("/").split("/")
-                if len(parts) != 4 or parts[3] not in ("csv", "report"):
+                if len(parts) != 4 or parts[3] not in ("csv", "report", "inspection"):
                     raise ValueError("Unknown download.")
                 run = get_run(parts[2])
                 if run is None:
                     return self.send(404, dict(error="These results are no longer available. Add the original files and check them again."))
                 if parts[3] == "report":
                     return self.send(200, public_run(run), filename=f"{run['system']}_analysis_record.json")
+                if parts[3] == "inspection":
+                    return self.send(200, inspection_report(run), "text/plain; charset=utf-8",
+                                     f"{run['system']}_inspection_report.txt")
                 filename = ("preview_" if run["preview"] else "") + SYSTEMS[run["system"]]["output"]
                 return self.send(200, run.get("csv") or csv_bytes(run["system"], run["rows"]), "text/csv; charset=utf-8", filename)
             static = {"/": "index.html", "/app.js": "app.js", "/style.css": "style.css"}

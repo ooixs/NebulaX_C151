@@ -30,7 +30,8 @@ def predict_with_evidence(input_path: str | Path) -> tuple[pd.DataFrame, dict]:
     art = _artefact()
     df = load_stream(input_path)
     segs = segment(df)
-    X = features_table(segs, art["ref"])[art["feature_names"]]
+    all_features = features_table(segs, art["ref"])
+    X = all_features[art["feature_names"]]
     p = art["clf"].predict_proba(X)[:, 1]
     labels = ["Abnormal resistance" if v >= art["threshold"] else "Normal" for v in p]
     out = segments_to_frame(segs, labels)
@@ -40,9 +41,9 @@ def predict_with_evidence(input_path: str | Path) -> tuple[pd.DataFrame, dict]:
         "exc_mid_mean": ("Mid-travel resistance signal", "", 2),
     }
     populations = {
-        feature: X[feature].astype(float).tolist()
+        feature: all_features[feature].astype(float).tolist()
         for feature in comparison_features
-        if feature in X
+        if feature in all_features
     }
     populations["duration"] = [
         (movement["t"].iloc[-1] - movement["t"].iloc[0]).total_seconds()
@@ -55,7 +56,7 @@ def predict_with_evidence(input_path: str | Path) -> tuple[pd.DataFrame, dict]:
         for feature, (label_text, unit, digits) in comparison_features.items():
             if feature not in populations:
                 continue
-            value = duration if feature == "duration" else X.iloc[index - 1][feature]
+            value = duration if feature == "duration" else all_features.iloc[index - 1][feature]
             population = populations[feature]
             comparisons.append(comparison(label_text, value, population, unit, digits))
         items.append({

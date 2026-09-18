@@ -1,6 +1,9 @@
 # NebulaX Control Room
 
-A local, responsive train condition monitoring app for Team C151. All application source is in this folder. It integrates the existing models through `common.inference.predict(subsystem, input_path)`; it does not change trained models, thresholds or prediction logic.
+A responsive train condition monitoring app for Team C151. It integrates the existing models
+through `common.inference.predict_with_evidence(subsystem, input_path)` without changing trained
+models, thresholds, or official prediction columns. Additional evidence is kept in the technician
+record and never added to the challenge CSV.
 
 For a private hosted installation, see the repository's
 [Google Cloud Run deployment guide](../docs/cloud-run-deployment.md). Local operation remains
@@ -40,15 +43,35 @@ The four supplied model binaries and their `active_model.json` manifests are inc
 
 Model setup reports a missing file, invalid manifest or checksum mismatch. Restore only trusted trained artifacts; serialized Python models execute code when loaded. If restoring an original trusted artifact without its manifest, use the existing `python -m common.artifacts --activate <artifact-path> --run-id <run-id>` command. The app deliberately requires explicit selection for every model, including SHM's alternate JSON format. Select Check setup again after restoration.
 
-## Operator workflow
+## Technician workflow
 
-1. Select Doors, Air conditioning, Rail condition or Structural health.
-2. Drag original data files into the upload area. Door accepts one continuous stream; the others accept up to 100 files and 120 MB per batch. Split large test sets across batches.
-3. Select Check these files. Review the visual summary, What to check next, and the searchable results table. Select Download results (CSV) to save your results.
-4. Select Technical record (JSON) if you need input hashes, model version, timing and output evidence.
-5. Select Download submission, then Download ZIP file to save `predictions.zip`. Live batches are combined by subsystem. Repeated filenames use their newest prediction; Door uses only the newest stream. Contributing batches must use the same model hash. The ZIP has only the official prediction CSVs at its top level.
+1. Select Doors, Air conditioning, Rail condition, or Structural health.
+2. Record the train or asset ID, component/location, acquisition time, and work order. These fields
+   connect a prediction to the part that must be inspected.
+3. Add original data files. Door accepts one stream; the others accept up to 100 files and 120 MB
+   per local batch. The file list shows basic readiness before analysis.
+4. Select **Check files**. If a multi-file batch contains a malformed file, the app isolates it and
+   keeps valid results rather than discarding the whole batch.
+5. Select a door movement, ACV car, Rail file, or SHM file to see its key measurements beside the
+   average for the current recording or batch. Colours describe relative position only; they are
+   not fleet thresholds or confirmed faults.
+6. Save the inspection status and technician note. The Review queue can reopen the analysis and
+   download a plain-text inspection report or the official result CSV.
 
-The most recent 40 runs are kept in server memory and restored after browser refresh. They disappear when the server stops or a cloud instance is replaced. Input uploads are placed in an isolated temporary directory and deleted after inference. Download records and exports before stopping. In local mode, the server binds only to 127.0.0.1 and is intended for one operator. The Cloud Run guide documents the separate private hosted mode and its limits.
+Completed live checks are stored in `app/.nebulax/history.sqlite3` by default, up to the most recent
+500 records. Set `NEBULAX_DATA_DIR` to place this database elsewhere. Original uploads are still
+written only to an isolated temporary directory and deleted after inference; the database stores
+results, hashes, evidence, context, notes, and the exact official CSV. Example previews stay in
+memory and are not added to the durable queue.
+
+Local SQLite history survives app restarts. A Cloud Run instance filesystem is ephemeral, so a
+hosted deployment needs a mounted durable store or external persistence if cross-revision history
+is required. The app remains a single-operator tool and has no account or multi-user editing model.
+
+Challenge export is intentionally secondary. Open **Review queue → Submission tools** to create
+`predictions.zip`. Repeated filenames use their newest prediction; Door uses the newest stream;
+and contributing batches must use the same model hash. Asset context and technician notes never
+enter the official CSVs.
 
 “View example results” reads the repository's existing `predictions/` CSVs. It does **not** run a model or verify the historic model/input provenance. These results are visibly labelled and cannot be included in a submission archive. A packaged app without these CSVs still supports live inference.
 
@@ -57,9 +80,12 @@ The most recent 40 runs are kept in server memory and restored after browser ref
 Based on [PS3 specifications](https://github.com/aochinwen/NebulaX-Hackathon-ProblemStatement/blob/main/PS3/01_Problem_Statement_3_Specifications.md):
 
 - **Ease of use:** one selection/upload/analyze flow, drag and drop, format guidance, actionable errors, responsive layout and direct downloads.
-- **Clarity:** Door cycle sequence and exact intervals; ACV ordered car cards; rail class distribution and side localisation; SHM comparative damage bars. Tables expose individual predictions, and full-precision export is independent of UI filters.
-- **Usefulness:** inspection suggestions tied to model outputs, explicit model limits, batch handling, session history and integrity-checked provenance.
-- **Problem fit:** all four subsystems, clear maintenance questions, model methods and research scores in Model setup. No unsupported confidence probabilities, asset positions, remaining-life forecasts or held-out scores.
+- **Clarity:** selectable Door movements, ACV cars, Rail recordings, and SHM recordings expose the
+  measurements that drove prioritisation and compare them with peers in the same upload.
+- **Usefulness:** asset identification, partial batch recovery, durable review status, technician
+  notes, inspection reports, and history connect model output to physical follow-up.
+- **Problem fit:** all four subsystems retain their distinct maintenance question without showing
+  model scores as calibrated probabilities or fatigue damage as remaining life.
 - **Technical execution:** the existing shared model interface produces the official output schema. Live CSV downloads retain the predictor's CSV representation; combined exports preserve numeric strings without rounding. Preview results never enter a submission.
 
 A high placing cannot be guaranteed: held-out model performance and judges' assessments remain independent of the interface.
@@ -70,8 +96,9 @@ Use the included models and actual held-out inputs, not saved-result previews.
 
 - **0:00–0:25:** explain the maintenance question and four-subsystem coverage.
 - **0:25–1:15:** select a subsystem, upload data and run inference.
-- **1:15–2:15:** inspect a flagged result and suggested check; show the other subsystem views using live analyses prepared earlier in the same session.
-- **2:15–3:00:** show model provenance, download a CSV and export the combined archive.
+- **1:15–2:15:** select a flagged item, compare its measurements with the batch, and record the
+  inspection status.
+- **2:15–3:00:** open the durable Review queue and download an inspection report or official CSV.
 
 Record a real screen video no longer than three minutes and add it to the final team submission folder. This implementation does not manufacture a demo recording or claim previews as real inference.
 
@@ -82,6 +109,10 @@ python3 -m unittest discover -s app/tests -v
 node --check app/static/app.js
 ```
 
-The tests cover schema checks, upload boundaries, the shared prediction interface for all four subsystems (with injected test predictors), checksum validation, model changes during inference, exact CSV export, multi-batch merging, duplicate handling and preview exclusion. These are app contract tests. Run `python -m pytest tests -q` for real-model inference and packaged prediction parity checks; these also require the scientific dependencies and source datasets.
+The tests cover schema checks, upload boundaries, model checksums, persistent history, asset
+context, review updates, inspection reports, partial batch recovery, evidence separation, exact
+CSV export, duplicate handling, preview exclusion, and the static technician workflow. Run
+`python -m pytest tests -q` for model inference and packaged prediction parity checks; these also
+require the scientific dependencies and source datasets.
 
 Run `python package.py` from the repository root to copy this folder, the shared inference modules and the selected models into a self-contained submission app. Inside `C151/app/`, run `python server.py` using the inference environment. For a new environment, install `requirements-runtime.txt` from that folder to use the recorded library versions. The server detects either repository or packaged layout automatically. Packaging refuses to overwrite an existing directory; use `python package.py --dest C151-new` for a fresh build.
