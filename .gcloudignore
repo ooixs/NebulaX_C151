@@ -1,0 +1,66 @@
+# Upload only files consumed by Dockerfile. Docker's own ignore file does not
+# limit the source archive sent to Cloud Build.
+**
+!Dockerfile
+!requirements.txt
+!.dockerignore
+
+!app/
+!app/server.py
+!app/model_details.json
+!app/static/
+!app/static/app.js
+!app/static/index.html
+!app/static/style.css
+
+!common/
+!common/__init__.py
+!common/artifacts.py
+!common/inference.py
+!common/metrics.py
+
+!Door/
+!Door/code/
+!Door/code/__init__.py
+!Door/code/pipeline.py
+!Door/code/predict.py
+!Door/model/
+!Door/model/active_model.json
+!Door/model/door_model.joblib
+
+!ACV/
+!ACV/code/
+!ACV/code/__init__.py
+!ACV/code/pipeline.py
+!ACV/code/predict.py
+!ACV/model/
+!ACV/model/active_model.json
+!ACV/model/acv_model.joblib
+
+!Rail Corrugation/
+!Rail Corrugation/code/
+!Rail Corrugation/code/__init__.py
+!Rail Corrugation/code/decision.py
+!Rail Corrugation/code/pipeline.py
+!Rail Corrugation/code/predict.py
+!Rail Corrugation/model/
+!Rail Corrugation/model/active_model.json
+!Rail Corrugation/model/rail_model.joblib
+
+!rail_corrugation/
+!rail_corrugation/__init__.py
+
+!SHM/
+!SHM/code/
+!SHM/code/__init__.py
+!SHM/code/pipeline.py
+!SHM/code/predict.py
+!SHM/model/
+!SHM/model/active_model.json
+!SHM/model/shm_model.joblib
+
+!predictions/
+!predictions/acv_predictions.csv
+!predictions/door_predictions.csv
+!predictions/rail_predictions.csv
+!predictions/shm_predictions.csv

@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from rail_corrugation.pipeline import CLASSES, aggregate, file_channel_table, side_relative_rows  # noqa: E402
+from rail_corrugation.decision import decode, legacy_decision  # noqa: E402
 from common.artifacts import load_active_model, load_rail_model
 
 MODEL_PATH = ROOT / "Rail Corrugation/model/rail_model.joblib"
@@ -30,6 +31,16 @@ def _natural_key(p: Path):
 
 def predict_one(path: Path, with_proba: bool = False, *, artifact=None):
     art = _artefact() if artifact is None else artifact
+    if "components" in art or "config" in art:
+        from rail_corrugation.predict_candidate import side_probabilities
+
+        probabilities, v = side_probabilities(path, art)
+        p1, p2 = map(float, probabilities)
+        label = str(decode([p1], [p2], art["decision"])[0])
+        row = {"file_id": path.name, "prediction": label}
+        if with_proba:
+            row.update(p_Normal=1 - max(p1, p2), **{"p_Side I": p1, "p_Side II": p2}, speed_mps=v)
+        return row
     ct, v = file_channel_table(path)
     engineered = art.get("engineered_features", False)
     feats = aggregate(art["ref"].excess(ct, v), v, paired=engineered)
@@ -37,7 +48,7 @@ def predict_one(path: Path, with_proba: bool = False, *, artifact=None):
         r1, r2 = side_relative_rows(feats, engineered=engineered)
         R = pd.DataFrame([r1, r2]).reindex(columns=art["det_cols"]).fillna(-9)
         p1, p2 = art["det"].predict_proba(R)[:, 1]
-        label = "Normal" if max(p1, p2) < art["tau"] else ("Side I" if p1 >= p2 else "Side II")
+        label = str(decode([p1], [p2], art.get("decision") or legacy_decision(art["tau"]))[0])
         proba = {"Normal": 1 - max(p1, p2), "Side I": p1, "Side II": p2}
     else:
         X = pd.DataFrame([feats]).reindex(columns=art["clf_cols"]).fillna(-9)

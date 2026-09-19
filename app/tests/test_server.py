@@ -35,10 +35,10 @@ class ContractTests(unittest.TestCase):
     def setUp(self):
         server.RUNS.clear()
 
-    def request(self, path, body, content_type='application/json', origin=None):
+    def request(self, path, body, content_type='application/json', origin=None, host='127.0.0.1:8765'):
         handler = object.__new__(server.Handler)
         handler.path = path
-        handler.headers = {'Content-Length':str(len(body)), 'Content-Type':content_type, 'Host':'127.0.0.1:8765'}
+        handler.headers = {'Content-Length':str(len(body)), 'Content-Type':content_type, 'Host':host}
         if origin:
             handler.headers['Origin'] = origin
         handler.rfile = io.BytesIO(body)
@@ -66,6 +66,23 @@ class ContractTests(unittest.TestCase):
     def test_cross_origin_and_empty_requests_rejected(self):
         self.assertEqual(self.request('/api/export', b'{}', origin='https://unrelated.example')[0], 403)
         self.assertEqual(self.request('/api/analyze', b'')[0], 413)
+
+    def test_https_same_origin_is_accepted(self):
+        self.assertNotEqual(
+            self.request('/api/export', b'{}', origin='https://127.0.0.1:8765')[0],
+            403,
+        )
+
+    def test_loopback_proxy_origin_is_accepted(self):
+        self.assertNotEqual(
+            self.request(
+                '/api/export',
+                b'{}',
+                origin='http://127.0.0.1:18080',
+                host='nebulax-control-room.example.run.app',
+            )[0],
+            403,
+        )
 
     def test_upload_boundaries(self):
         for key, files in [
@@ -107,6 +124,24 @@ class ContractTests(unittest.TestCase):
             self.assertFalse(server.model_status('door')['ready'])
             manifest.write_text('[]')
             self.assertFalse(server.model_status('door')['ready'])
+
+    def test_model_details_follow_verified_checkpoint(self):
+        with tempfile.TemporaryDirectory() as temp, patch.object(server, 'ROOT', Path(temp)):
+            directory = Path(temp) / 'Rail Corrugation/model'
+            directory.mkdir(parents=True)
+            artifact = directory / 'rail_model.joblib'
+            artifact.write_bytes(b'first checkpoint')
+            digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+            manifest = directory / 'active_model.json'
+            record = dict(schema_version=1, file=artifact.name, sha256=digest, run_id='selected')
+            manifest.write_text(json.dumps(record))
+            with patch.object(server, 'MODEL_DETAILS', {digest: {'name': 'Selected ensemble'}}):
+                self.assertEqual(server.model_status('rail')['details']['name'], 'Selected ensemble')
+                artifact.write_bytes(b'replacement checkpoint')
+                self.assertFalse(server.model_status('rail')['ready'])
+                record['sha256'] = hashlib.sha256(artifact.read_bytes()).hexdigest()
+                manifest.write_text(json.dumps(record))
+                self.assertIsNone(server.model_status('rail')['details'])
 
     def test_live_routes_shared_predictor_and_preserves_csv(self):
         rows = [{'file_id':'Test1.csv','prediction':'Side I'}]

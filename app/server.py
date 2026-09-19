@@ -8,6 +8,7 @@ import io
 import json
 import logging
 import math
+import os
 import re
 import sys
 import sqlite3
@@ -37,6 +38,7 @@ HISTORY_PATH = None
 RUNS = {}
 RUN_LOCK = threading.Lock()
 INFERENCE_LOCK = threading.Lock()
+MODEL_DETAILS = json.loads((APP / "model_details.json").read_text(encoding="utf-8"))
 
 
 def model_status(key):
@@ -59,6 +61,8 @@ def model_status(key):
         if digest != record.get("sha256"):
             raise ValueError("The model file does not match its saved record. Replace it with the original trained file, then check setup again.")
         result.update(ready=True, artifact=path.name, run_id=record.get("run_id"), sha256=digest, message="The model file matches its saved record. Required software is checked when you start a file check.")
+        # Descriptions and reported scores belong to the exact checkpoint, not its filename.
+        result["details"] = MODEL_DETAILS.get(digest)
     except (ValueError, OSError) as exc:
         result["message"] = str(exc)
     return result
@@ -353,7 +357,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             origin = self.headers.get("Origin")
-            if origin and origin != f"http://{self.headers.get('Host')}":
+            parsed_origin = urlparse(origin) if origin else None
+            same_host = (parsed_origin and parsed_origin.scheme in ("http", "https")
+                         and parsed_origin.netloc == self.headers.get("Host"))
+            local_proxy = (parsed_origin and parsed_origin.scheme == "http"
+                           and parsed_origin.hostname in ("127.0.0.1", "localhost", "::1"))
+            if origin and not (same_host or local_proxy):
                 return self.send(403, dict(error="Requests must come from this local app."))
             size = int(self.headers.get("Content-Length", "0"))
             if size <= 0 or size > MAX_UPLOAD + 1024 * 1024:
@@ -398,11 +407,12 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"))
+    parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8765")))
     args = parser.parse_args()
     configure_history(APP / '.local' / 'results.sqlite3')
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
-    print(f"NebulaX Control Room → http://127.0.0.1:{args.port}", flush=True)
+    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    print(f"NebulaX Control Room → http://{args.host}:{args.port}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

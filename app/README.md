@@ -2,6 +2,10 @@
 
 A local, responsive train condition monitoring app for Team C151. All application source is in this folder. It integrates the existing models through `common.inference.predict(subsystem, input_path)`; it does not change trained models, thresholds or prediction logic.
 
+For a private hosted installation, see the repository's
+[Google Cloud Run deployment guide](../docs/cloud-run-deployment.md). Local operation remains
+the default when sensor files must stay on the operator's computer.
+
 ## Start
 
 From the repository root, using Python **3.11 or newer**:
@@ -31,8 +35,10 @@ The four supplied model binaries and their `active_model.json` manifests are inc
 | --- | --- | --- |
 | `Door/model/` | `door_model.joblib` | `2026-09-18-autoresearch` |
 | `ACV/model/` | `acv_model.joblib` | `2026-09-18-autoresearch` |
-| `Rail Corrugation/model/` | `rail_model.joblib` | `2026-09-18-autoresearch` |
+| `Rail Corrugation/model/` | `rail_model.joblib` | `2026-09-19-legacy_sg_mf50_leaf2_ensemble-forest` |
 | `SHM/model/` | `shm_model.joblib` | `2026-09-18-sg-branch3` |
+
+Rail uses the checkpoint from the submission with user-reported macro F1 **0.8261904762**. It blends the legacy spectral plus SG random forest (75%) with the SG random forest (25%), with threshold `tau=0.20`. All 68 Rail predictions were reproduced against that submission. Checkpoint-specific metadata remains available from the status API when its verified hash matches `app/model_details.json`.
 
 The upload page disables unavailable checks when a model file or its manifest is missing or invalid. Restore only trusted trained artifacts; serialized Python models execute code when loaded. If restoring an original trusted artifact without its manifest, use the existing `python -m common.artifacts --activate <artifact-path> --run-id <run-id>` command. The app deliberately requires explicit selection for every model, including SHM's alternate JSON format. Refresh the page after restoration.
 
@@ -45,7 +51,7 @@ The upload page disables unavailable checks when a model file or its manifest is
 5. **Previous results** provides filters by check type and elapsed time, with a separate detail view and back button. Results are saved in `app/.local/results.sqlite3` and survive browser refreshes and server restarts. This local history is excluded from Git and submission packages.
 6. **Download all check results** produces an operator-friendly ZIP. An optional judging download produces the required `predictions.zip` with the original column names and timestamp format. Both combine checks by subsystem, using the newest prediction for repeated filenames and the newest Door stream. Contributing checks must use the same model version.
 
-If a queued file fails, completed files remain in Previous results and only unfinished files remain selected. Input uploads are deleted after inference; history retains results and file metadata. The server binds only to 127.0.0.1 and is intended for one operator, not shared or public hosting.
+If a queued file fails, completed files remain in Previous results and only unfinished files remain selected. Input uploads are deleted after inference; history retains results and file metadata. By default, the server binds to 127.0.0.1 for one local operator. The separate Cloud Run mode uses `HOST` and `PORT`; its instance-local history is lost when the container is replaced. See the Cloud Run guide for hosted-mode limits.
 
 Rail checks target **corrugation**, a repeated pattern of uneven wear, rather than all rail defects. Structural health estimates damage during equal-length recordings from healthy operation: comparisons need the same measurement point, line and AW0/AW4 load condition. Random filenames do not identify the recording order.
 

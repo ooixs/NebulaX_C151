@@ -115,6 +115,75 @@ def test_shm_residual_model_roundtrip_and_features():
     assert residual.predict(x) == pytest.approx(0.25)
 
 
+def test_rail_decision_rules_and_legacy_equivalence():
+    from rail_corrugation.decision import decode, legacy_decision, select
+
+    p1 = np.array([0.1, 0.6, 0.2, 0.30, 0.45])
+    p2 = np.array([0.1, 0.2, 0.7, 0.28, 0.44])
+    legacy = np.where(np.maximum(p1, p2) < 0.25, "Normal", np.where(p1 >= p2, "Side I", "Side II"))
+    assert np.array_equal(decode(p1, p2, legacy_decision(0.25)), legacy)
+    assert list(decode(p1, p2, dict(rule="per_side", tau1=0.5, tau2=0.5))) == ["Normal", "Side I", "Side II", "Normal", "Normal"]
+    assert list(decode(p1, p2, dict(rule="per_side", tau1=0.9, tau2=0.6))) == ["Normal", "Normal", "Side II", "Normal", "Normal"]
+    assert list(decode(p1, p2, dict(rule="margin", tau=0.25, delta=0.1))) == ["Normal", "Side I", "Side II", "Normal", "Normal"]
+    with pytest.raises(ValueError):
+        decode(p1, p2, dict(rule="unknown"))
+    labels = np.array(["Normal", "Side I", "Side II", "Normal", "Normal"])
+    for rule in ("global", "per_side", "margin"):
+        decision, score = select(rule, labels, np.column_stack([p1, p2]))
+        assert decision["rule"] == rule and score == pytest.approx(1.0)
+        assert np.array_equal(decode(p1, p2, decision), labels)
+
+
+def test_rail_block_protocol_is_contiguous_and_leak_free():
+    from rail_corrugation.decision import block_protocol, contiguous_blocks
+
+    numbers = np.array([3, 1, 2, 10, 7, 8, 9, 4, 5, 6, 12, 11])
+    protocol = block_protocol(numbers, blocks=4, inner_blocks=3, offsets=(0, 5))
+    assert len(protocol) == 8
+    for fold in protocol:
+        tr, te = set(fold["train"].tolist()), set(fold["validation"].tolist())
+        assert tr.isdisjoint(te) and tr | te == set(range(12))
+        ranks = np.sort(np.argsort(np.argsort(numbers))[fold["validation"]])
+        span = (ranks[-1] - ranks[0] + 1) % 12 if fold["offset"] else ranks[-1] - ranks[0] + 1
+        assert span == len(ranks) or fold["offset"]  # contiguous in file-number order (rotation may wrap once)
+        seen = []
+        for inner_tr, inner_te in fold["inner"]:
+            assert set(inner_tr.tolist()).isdisjoint(inner_te.tolist())
+            assert set(inner_tr.tolist()) | set(inner_te.tolist()) == tr
+            assert te.isdisjoint(inner_tr.tolist()) and te.isdisjoint(inner_te.tolist())
+            seen.extend(inner_te.tolist())
+        assert sorted(seen) == sorted(tr)
+    first = [f for f in protocol if f["offset"] == 0]
+    assert [numbers[f["validation"]].tolist() for f in first] == [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]]
+    with pytest.raises(ValueError):
+        contiguous_blocks(np.arange(5), blocks=1)
+
+
+def test_rail_predict_honours_decision_in_artifact(monkeypatch, tmp_path):
+    from rail_corrugation import predict as rail_predict
+
+    class Detector:
+        def predict_proba(self, R):
+            return np.array([[0.4, 0.6], [0.7, 0.3]])
+
+    class Reference:
+        def excess(self, ct, v):
+            return ct
+
+    monkeypatch.setattr(rail_predict, "file_channel_table", lambda path: ("ct", 12.0))
+    monkeypatch.setattr(rail_predict, "aggregate", lambda ct, v, paired=False: {"speed": v, "speed_bin": 4})
+    monkeypatch.setattr(rail_predict, "side_relative_rows", lambda feats, engineered=False: [{"speed": 12.0}, {"speed": 12.0}])
+    base = dict(choice="side_detector", ref=Reference(), det=Detector(), det_cols=["speed"], tau=0.25)
+    path = tmp_path / "Test7.csv"
+    path.write_text("x")
+    assert rail_predict.predict_one(path, artifact=base)["prediction"] == "Side I"
+    assert rail_predict.predict_one(path, artifact={**base, "tau": 0.7})["prediction"] == "Normal"
+    per_side = {**base, "decision": dict(rule="per_side", tau1=0.9, tau2=0.2)}
+    assert rail_predict.predict_one(path, artifact=per_side)["prediction"] == "Side II"
+    margin = {**base, "decision": dict(rule="margin", tau=0.25, delta=0.5)}
+    assert rail_predict.predict_one(path, artifact=margin)["prediction"] == "Normal"
+
+
 def test_research_plateau_requires_meaningful_improvement():
     from common.research import Plateau
 

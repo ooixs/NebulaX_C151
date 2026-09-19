@@ -116,7 +116,10 @@ def test_research_model_and_stopping_rule(name):
     assert search.best_mean == pytest.approx(summary["best_score"])
     assert summary["trials"] == len(trials)
     assert not manifest["test_data_used_for_selection"]
-    assert fingerprint(folder / summary["model"]) == fingerprint(model_path(name))
+    active = model_path(name)
+    selection = json.loads((active.parent / "active_model.json").read_text(encoding="utf-8"))
+    if selection["run_id"] == summary["run_id"]:
+        assert fingerprint(folder / summary["model"]) == fingerprint(active)
     assert (folder / "before").is_dir()
 
 
@@ -125,13 +128,14 @@ def test_archived_full_predictions_cover_input(name):
     from common.metrics import parse_door_time
     from Door.code.pipeline import load_stream, segment
 
-    folder, _ = latest_research_run(name)
+    folder, summary = latest_research_run(name)
     path = folder / f"{name}_predictions.csv"
     if not path.exists() or not CASES[name]["inp"].exists():
         pytest.skip(f"{name}: full prediction export or input not present")
     frame = pd.read_csv(path, dtype=str)
     published = ROOT / "predictions" / path.name
-    if published.exists():
+    selection = json.loads((model_path(name).parent / "active_model.json").read_text(encoding="utf-8"))
+    if published.exists() and selection["run_id"] == summary["run_id"]:
         pd.testing.assert_frame_equal(frame, pd.read_csv(published, dtype=str))
     assert frame.notna().all().all()
     if name == "door":

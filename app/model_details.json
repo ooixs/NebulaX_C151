@@ -1,0 +1,9 @@
+{
+  "bc75821ad886735775c64f296a2f27210176a19bb3ff966d93aa19cfe2f16883": {
+    "name": "Rail forest ensemble · 19 September 2026",
+    "method": "Combines two random forests to compare vibration patterns on both rail sides. The selected blend gives 75% weight to the legacy spectral plus SG model and 25% to the SG model.",
+    "settings": "800 trees per forest; full-training seed 0; primary forest max_features 0.5 and minimum leaf size 2; global threshold τ = 0.20.",
+    "score": "0.8261904762 Rail macro F1 · user-reported leaderboard result, 19 September 2026. This is a submission score, not confidence in an individual result.",
+    "submission_sha256": "48854674b5aa86c8fdc9f7049d12922f0f3f7744833ca1695feb960015db6908"
+  }
+}

@@ -8,6 +8,11 @@ Produces:
     ├── app/                     (app sources + common/ + the four <Sub>/{code,model} it imports)
     └── Optional_Items/
         ├── write_up.md
+        ├── writeup_ACV.md
+        ├── writeup_Door.md
+        ├── writeup_Rail_Corrugation.md
+        ├── writeup_SHM.md
+        ├── writeup_App.md
         └── <Door|ACV|Rail Corrugation|SHM>/{code, model}
 
 demo_video.* must be added to C151/ manually after recording.
@@ -26,6 +31,14 @@ from common.artifacts import MANIFEST, activate_model, resolve_model
 ROOT = Path(__file__).resolve().parent
 SUBSYSTEMS = ["Door", "ACV", "Rail Corrugation", "SHM"]
 PREDICTIONS = ["door_predictions.csv", "acv_predictions.csv", "rail_predictions.csv", "shm_predictions.csv"]
+WRITEUPS = [
+    "write_up.md",
+    "writeup_ACV.md",
+    "writeup_Door.md",
+    "writeup_Rail_Corrugation.md",
+    "writeup_SHM.md",
+    "writeup_App.md",
+]
 MODEL_FILES = {
     "Door": ("door_model.joblib",),
     "ACV": ("acv_model.joblib",),
@@ -88,10 +101,12 @@ def assemble(dest: Path, root: Path = ROOT):
     opt.mkdir()
     copytree(root / "common", opt / "common")
     copytree(root / "rail_corrugation", opt / "rail_corrugation")
-    if (root / "write_up.md").exists():
-        shutil.copy2(root / "write_up.md", opt / "write_up.md")
-    else:
-        warnings.append("write_up.md not found")
+    for writeup in WRITEUPS:
+        source = root / writeup
+        if source.exists():
+            shutil.copy2(source, opt / writeup)
+        else:
+            warnings.append(f"{writeup} not found")
     for sub in SUBSYSTEMS:
         if not copytree(root / sub / "code", opt / sub / "code"):
             warnings.append(f"Optional_Items/{sub}/code is empty")
