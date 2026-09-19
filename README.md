@@ -89,11 +89,12 @@ after the physical model's residuals were evaluated.
 |---|---|---|---:|
 | Door | Timestamp-gap segmentation and RF/logistic-regression ensemble | 5 contiguous blocks with inner blocked threshold selection | IoU-weighted F1 **1.000** |
 | ACV | Peer-relative temperature ranking with a pressure-deficit term when available | Leave-one-case-out over 6 cases | Rank-decay **1.000** |
-| Rail Corrugation | Shared per-side ExtraTrees detector on spectral and side-relative features | 5-fold x 3 repeats with fold-local references and nested threshold selection | Macro F1 **0.8232 +/- 0.0167** |
+| Rail Corrugation | 75:25 legacy spectral + SG / SG random-forest ensemble, 800 trees each, threshold 0.20 | User-reported leaderboard result, 19 September 2026 | Macro F1 **0.8261904762** |
 | SHM | Rainflow and Miner's rule with a Huber log-residual correction | 8-fold x 3 seeds over 64 files | 1 - MAPE **0.9797 +/- 0.0011** |
 
-These are estimates from the labelled training data, not scores on the organisers' private test
-labels. They also have different levels of certainty. Door has a clear class separation in the
+Door, ACV and SHM results above are estimates from labelled training data. The Rail result is
+the user-reported score for `2026-09-19-legacy_sg_mf50_leaf2_ensemble-forest`, now selected by the app.
+These results have different levels of certainty. Door has a clear class separation in the
 available data, while ACV has only six labelled cases. Rail Corrugation has 14 Side I examples
 and is sensitive to speed and acquisition grouping. SHM's learned correction is fitted on 64
 files. The detailed write-ups report these limitations and the alternative validation checks.

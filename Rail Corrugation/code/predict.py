@@ -31,6 +31,16 @@ def _natural_key(p: Path):
 
 def predict_one(path: Path, with_proba: bool = False, *, artifact=None):
     art = _artefact() if artifact is None else artifact
+    if "components" in art or "config" in art:
+        from rail_corrugation.predict_candidate import side_probabilities
+
+        probabilities, v = side_probabilities(path, art)
+        p1, p2 = map(float, probabilities)
+        label = str(decode([p1], [p2], art["decision"])[0])
+        row = {"file_id": path.name, "prediction": label}
+        if with_proba:
+            row.update(p_Normal=1 - max(p1, p2), **{"p_Side I": p1, "p_Side II": p2}, speed_mps=v)
+        return row
     ct, v = file_channel_table(path)
     engineered = art.get("engineered_features", False)
     feats = aggregate(art["ref"].excess(ct, v), v, paired=engineered)

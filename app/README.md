@@ -35,8 +35,10 @@ The four supplied model binaries and their `active_model.json` manifests are inc
 | --- | --- | --- |
 | `Door/model/` | `door_model.joblib` | `2026-09-18-autoresearch` |
 | `ACV/model/` | `acv_model.joblib` | `2026-09-18-autoresearch` |
-| `Rail Corrugation/model/` | `rail_model.joblib` | `2026-09-18-autoresearch` |
+| `Rail Corrugation/model/` | `rail_model.joblib` | `2026-09-19-legacy_sg_mf50_leaf2_ensemble-forest` |
 | `SHM/model/` | `shm_model.joblib` | `2026-09-18-sg-branch3` |
+
+Rail now uses the exact checkpoint from the submission with user-reported Rail macro F1 **0.8261904762**. It blends the legacy spectral plus SG random forest (75%) with the SG random forest (25%): 800 trees per component, full-training seed 0, primary forest `max_features=0.5`, `min_samples_leaf=2`, and global threshold `tau=0.20`. All 68 Rail predictions were reproduced exactly against that submission. Door, ACV and SHM predictions are unchanged. Model setup shows these details only when the verified checkpoint hash matches `app/model_details.json`; a replacement checkpoint will not inherit this score.
 
 Model setup reports a missing file, invalid manifest or checksum mismatch. Restore only trusted trained artifacts; serialized Python models execute code when loaded. If restoring an original trusted artifact without its manifest, use the existing `python -m common.artifacts --activate <artifact-path> --run-id <run-id>` command. The app deliberately requires explicit selection for every model, including SHM's alternate JSON format. Select Check setup again after restoration.
 

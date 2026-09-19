@@ -36,6 +36,7 @@ SYSTEMS = {
 RUNS = {}
 RUN_LOCK = threading.Lock()
 INFERENCE_LOCK = threading.Lock()
+MODEL_DETAILS = json.loads((APP / "model_details.json").read_text(encoding="utf-8"))
 
 
 def model_status(key):
@@ -58,6 +59,8 @@ def model_status(key):
         if digest != record.get("sha256"):
             raise ValueError("The model file does not match its saved record. Replace it with the original trained file, then check setup again.")
         result.update(ready=True, artifact=path.name, run_id=record.get("run_id"), sha256=digest, message="The model file matches its saved record. Required software is checked when you start a file check.")
+        # Descriptions and reported scores belong to the exact checkpoint, not its filename.
+        result["details"] = MODEL_DETAILS.get(digest)
     except (ValueError, OSError) as exc:
         result["message"] = str(exc)
     return result

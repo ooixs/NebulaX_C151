@@ -45,7 +45,7 @@ def component_probability(art, data, ct, speed):
     return art['model'].predict_proba(design)[:, list(art['model'].classes_).index(1)]
 
 
-def predict_one(path, artifact):
+def side_probabilities(path, artifact):
     data = extract(path)
     def needs_pooled(art):
         return any(needs_pooled(x) for x in art['components']) if 'components' in art else art['config'].get('pooled', False)
@@ -53,7 +53,11 @@ def predict_one(path, artifact):
         from rail_corrugation.spectral_variants import pooled_sg_rows
         data = (*data, pooled_sg_rows(path, data[0]))
     ct, speed = file_channel_table(path)
-    p = component_probability(artifact,data,ct,speed)
+    return component_probability(artifact,data,ct,speed), speed
+
+
+def predict_one(path, artifact):
+    p, _ = side_probabilities(path, artifact)
     return str(decode([p[0]],[p[1]],artifact['decision'])[0])
 
 

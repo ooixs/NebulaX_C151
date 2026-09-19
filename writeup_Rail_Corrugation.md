@@ -3,10 +3,14 @@
 ## Summary
 
 The Rail Corrugation subsystem classifies each one-second axle-box recording as `Normal`,
-`Side I`, or `Side II`. The product uses speed-aware spectral features and one shared ExtraTrees
-detector that evaluates each rail side relative to the other.
+`Side I`, or `Side II`. The active product uses the September 19 forest ensemble:
+75% legacy spectral plus SG random forest and 25% SG random forest. Each component has 800
+trees fitted with seed 0. The primary forest uses `max_features=0.5` and minimum leaf size 2;
+the global decision threshold is 0.20. The selected run is
+`2026-09-19-legacy_sg_mf50_leaf2_ensemble-forest`, with user-reported leaderboard macro F1
+**0.8261904762**. All 68 saved Rail predictions match that scored submission exactly.
 
-The active product model achieved macro F1 **0.8232 +/- 0.0167** in repeated nested validation.
+The previous ExtraTrees product model achieved macro F1 **0.8232 +/- 0.0167** in repeated nested validation.
 A later leakage-focused campaign evaluated the same model family under duplicate-safe blocks and
 speed-shift checks. Its promoted configuration scored 0.809 in repeated stratified validation,
 0.782 in duplicate-safe blocks, and 0.481 when transferred between speed bins. These results are

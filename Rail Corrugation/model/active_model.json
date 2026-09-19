@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
   "file": "rail_model.joblib",
-  "sha256": "26d7e90c2434eff12bd5d889ab5ef50607e6e84014d86ec3eda9156a44ef6c64",
-  "run_id": "2026-09-18-autoresearch"
+  "sha256": "bc75821ad886735775c64f296a2f27210176a19bb3ff966d93aa19cfe2f16883",
+  "run_id": "2026-09-19-legacy_sg_mf50_leaf2_ensemble-forest"
 }
