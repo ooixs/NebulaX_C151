@@ -7,9 +7,11 @@
 
 !app/
 !app/server.py
+!app/diagnostics.py
 !app/model_details.json
 !app/static/
 !app/static/app.js
+!app/static/technician.js
 !app/static/index.html
 !app/static/style.css
 

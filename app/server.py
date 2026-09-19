@@ -18,11 +18,17 @@ import time
 import uuid
 import zipfile
 from datetime import datetime, timezone
+from contextlib import closing
 from email.parser import BytesParser
 from email.policy import default
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+
+try:
+    from . import diagnostics
+except ImportError:
+    import diagnostics
 
 APP = Path(__file__).resolve().parent
 ROOT = APP if (APP / "common").is_dir() else APP.parent
@@ -135,9 +141,11 @@ def csv_bytes(key, rows):
     return buffer.getvalue().encode("utf-8")
 
 
-def save_run(key, rows, files, model, elapsed, preview=False, csv_content=None):
+def save_run(key, rows, files, model, elapsed, preview=False, csv_content=None, evidence=None):
     run = dict(id=uuid.uuid4().hex, system=key, rows=rows, files=files, model=model,
                elapsed=round(elapsed, 3), preview=preview, created=datetime.now(timezone.utc).isoformat())
+    if evidence is not None:
+        run['evidence'] = evidence
     if csv_content is not None:
         run["csv"] = csv_content
     with RUN_LOCK:
@@ -151,7 +159,7 @@ def configure_history(path):
     global HISTORY_PATH
     HISTORY_PATH = Path(path)
     HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(HISTORY_PATH) as db:
+    with closing(sqlite3.connect(HISTORY_PATH)) as db, db:
         db.execute("CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, record TEXT, output BLOB)")
         for record, output in db.execute("SELECT record, output FROM runs ORDER BY rowid"):
             run = json.loads(record)
@@ -162,7 +170,7 @@ def configure_history(path):
 
 def persist_run(run):
     if HISTORY_PATH is not None:
-        with sqlite3.connect(HISTORY_PATH) as db:
+        with closing(sqlite3.connect(HISTORY_PATH)) as db, db:
             db.execute("INSERT OR REPLACE INTO runs VALUES (?, ?, ?)",
                        (run['id'], json.dumps(public_run(run), allow_nan=False), run.get('csv')))
 
@@ -174,7 +182,7 @@ def readable_time(value):
         stamp = datetime(y, mo, d, h, mi, sec, ms * 1000)
     else:
         stamp = datetime.fromisoformat(str(value))
-    return stamp.strftime('%d %b %Y, %H:%M:%S.') + f'{stamp.microsecond // 1000:03d}' + (stamp.strftime(' %z') if stamp.tzinfo else '')
+    return stamp.strftime('%d %b %Y, %H:%M:%S') + (stamp.strftime(' %z') if stamp.tzinfo else '')
 
 
 OPERATOR_COLUMNS = {
@@ -217,7 +225,8 @@ def merge_runs(ids):
         raise ValueError('The checks use different models. Check the files again with one model version.')
     exact = [row for r in runs for row in csv.DictReader(io.StringIO(r['csv'].decode()))]
     merged = save_run(key, [row for r in runs for row in r['rows']], [f for r in runs for f in r['files']],
-                     runs[0]['model'], sum(r['elapsed'] for r in runs), csv_content=csv_bytes(key, exact))
+                     runs[0]['model'], sum(r['elapsed'] for r in runs), csv_content=csv_bytes(key, exact),
+                     evidence=diagnostics.merge([r.get('evidence', {}) for r in runs]))
     merged["combined_from"] = ids
     with RUN_LOCK:
         persist_run(merged)
@@ -241,12 +250,17 @@ def analyze(key, files):
             frame = predict(SYSTEMS[key]["name"], source)
             rows = json.loads(frame.to_json(orient="records", double_precision=15))
             validate_rows(key, rows, [name for name, _ in files])
+            try:
+                evidence = diagnostics.build(key, folder, rows, [name for name, _ in files])
+            except Exception:
+                logging.exception('Diagnostic measurements unavailable')
+                evidence = dict(version=1, items=[], error='Measurements could not be extracted. The model result is still available.')
         after = model_status(key)
         if not after["ready"] or any(after.get(k) != model.get(k) for k in ("sha256", "artifact", "run_id")):
             raise ValueError("The model changed while your files were being checked. Check these files again to get results from one model version.")
         # Keep the exact pandas CSV representation for submission parity.
         run = save_run(key, rows, [dict(name=name, bytes=len(data), sha256=hashlib.sha256(data).hexdigest()) for name, data in files], model, time.perf_counter() - started,
-                       csv_content=frame[SYSTEMS[key]["columns"]].to_csv(index=False).encode("utf-8"))
+                       csv_content=frame[SYSTEMS[key]["columns"]].to_csv(index=False).encode("utf-8"), evidence=evidence)
         return run
 
 
@@ -288,6 +302,48 @@ def export_zip(ids):
                     by_file.update({row["file_id"]: row for row in fresh})
                 content = csv_bytes(key, list(by_file.values()))
             archive.writestr(SYSTEMS[key]["output"], content)
+    return output.getvalue()
+
+
+def selected_zip(selection):
+    if not isinstance(selection, list) or not selection or len(selection) > 10000:
+        raise ValueError('Select at least one completed result.')
+    grouped, seen, hashes = {}, set(), {}
+    with RUN_LOCK:
+        for choice in selection:
+            if not isinstance(choice, dict):
+                raise ValueError('Invalid result selection.')
+            run = RUNS.get(choice.get('id'))
+            if not run or run['preview']:
+                raise ValueError('A selected check is unavailable.')
+            key = run['system']
+            rows = list(csv.DictReader(io.StringIO(run['csv'].decode())))
+            if key != 'door':
+                rows = [r for r in rows if r['file_id'] == choice.get('file')]
+            if not rows:
+                raise ValueError('A selected file is unavailable.')
+            identity = (key, choice.get('file') if key != 'door' else 'recording')
+            if identity in seen:
+                raise ValueError('Select one result per filename, and one Door recording.')
+            seen.add(identity)
+            digest = run['model']['sha256']
+            if key in hashes and hashes[key] != digest:
+                raise ValueError('Selected results use different model versions. Select checks from one version per system.')
+            hashes[key] = digest
+            grouped.setdefault(key, []).extend(rows)
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
+        folders = dict(door='doors', acv='air_conditioning', rail='rail_condition', shm='structural_health')
+        for key, rows in grouped.items():
+            if key != 'door' and len(rows) > 1:
+                for row in rows:
+                    # Source extensions are fixed per task; retain the source stem in each result name.
+                    source = Path(row['file_id']).name
+                    if source != row['file_id'] or '\\' in source:
+                        raise ValueError('A result has an invalid source filename.')
+                    archive.writestr(f"{folders[key]}/{Path(source).stem}_results.csv", operator_csv(dict(system=key, rows=[row])))
+            else:
+                archive.writestr(key+'_check_results.csv', operator_csv(dict(system=key, rows=rows)))
     return output.getvalue()
 
 
@@ -341,11 +397,11 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(404, dict(error="These results are no longer available. Add the original files and check them again."))
                 if parts[3] == "report":
                     report = dict(system=run['system'], checked_at=run['created'], source_files=run['files'],
-                                  results=operator_rows(run), model_version=(run.get('model') or {}).get('run_id'))
+                                  results=operator_rows(run), measurements=run.get('evidence'), model_version=(run.get('model') or {}).get('run_id'))
                     return self.send(200, report, filename=f"{run['system']}_check_results.json")
                 filename = ("example_" if run["preview"] else "") + run['system'] + '_check_results.csv'
                 return self.send(200, operator_csv(run), "text/csv; charset=utf-8", filename)
-            static = {"/": "index.html", "/app.js": "app.js", "/style.css": "style.css"}
+            static = {"/": "index.html", "/app.js": "app.js", "/style.css": "style.css", "/technician.js": "technician.js"}
             if path.path not in static:
                 return self.send(404, dict(error="Not found"))
             file = APP / "static" / static[path.path]
@@ -370,6 +426,8 @@ class Handler(BaseHTTPRequestHandler):
             body = self.rfile.read(size)
             if self.path == "/api/merge":
                 return self.send(200, public_run(merge_runs(json.loads(body).get('ids'))))
+            if self.path == "/api/selected-results":
+                return self.send(200, selected_zip(json.loads(body).get('selection')), 'application/zip', 'selected_check_results.zip')
             if self.path == "/api/all-results":
                 ids = json.loads(body).get('ids')
                 official = export_zip(ids)

@@ -34,6 +34,9 @@ class Frame:
 class ContractTests(unittest.TestCase):
     def setUp(self):
         server.RUNS.clear()
+        diagnostic_patch = patch.object(server.diagnostics, 'build', return_value={'version':1,'items':[]})
+        diagnostic_patch.start()
+        self.addCleanup(diagnostic_patch.stop)
 
     def request(self, path, body, content_type='application/json', origin=None, host='127.0.0.1:8765'):
         handler = object.__new__(server.Handler)
@@ -228,10 +231,33 @@ class ContractTests(unittest.TestCase):
         with zipfile.ZipFile(io.BytesIO(server.export_zip([run['id']]))) as zipped:
             self.assertEqual(zipped.read('shm_predictions.csv'), run['csv'])
 
-    def test_door_export_uses_recording_clock_and_milliseconds(self):
-        self.assertEqual(server.readable_time('2023-7-5-0-11-17-664'), '05 Jul 2023, 00:11:17.664')
+    def test_selected_download_contains_only_checked_files(self):
+        rows = [{'file_id':'one.csv','prediction':'Normal'}, {'file_id':'two.csv','prediction':'Side II'}]
+        run = server.save_run('rail', rows, [], {'sha256':'same'}, 0, csv_content=server.csv_bytes('rail',rows))
+        data = server.selected_zip([{'id':run['id'],'file':'two.csv'}])
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            self.assertEqual(archive.namelist(), ['rail_check_results.csv'])
+            self.assertEqual(archive.read('rail_check_results.csv').decode(), 'Source file,Rail corrugation result\ntwo.csv,Side II\n')
+        with self.assertRaises(ValueError):
+            server.selected_zip([{'id':run['id'],'file':'missing.csv'}])
+        with self.assertRaises(ValueError):
+            server.selected_zip([])
+
+    def test_task_download_groups_multiple_source_files(self):
+        rows = [{'file_id':'one.csv','prediction':'Normal'}, {'file_id':'two.csv','prediction':'Side II'}]
+        rail = server.save_run('rail', rows, [], {'sha256':'same'}, 0, csv_content=server.csv_bytes('rail',rows))
+        structural = [{'file_id':'stress.csv','prediction':'0.12345678901234567'}]
+        shm = server.save_run('shm', structural, [], {'sha256':'other'}, 0, csv_content=server.csv_bytes('shm',structural))
+        selection = [{'id':rail['id'],'file':r['file_id']} for r in rows]+[{'id':shm['id'],'file':'stress.csv'}]
+        with zipfile.ZipFile(io.BytesIO(server.selected_zip(selection))) as archive:
+            self.assertEqual(set(archive.namelist()), {'rail_condition/one_results.csv','rail_condition/two_results.csv','shm_check_results.csv'})
+            self.assertIn(b'two.csv,Side II', archive.read('rail_condition/two_results.csv'))
+            self.assertIn(b'0.12345678901234567', archive.read('shm_check_results.csv'))
+
+    def test_door_export_uses_recording_clock_to_seconds(self):
+        self.assertEqual(server.readable_time('2023-7-5-0-11-17-664'), '05 Jul 2023, 00:11:17')
         run = dict(system='door', rows=[{'start_time':'2023-7-5-0-0-0-0','end_time':'2023-7-5-0-0-3-760','prediction':'Normal'}])
-        self.assertEqual(server.operator_rows(run)[0]['Movement end (recording time)'], '05 Jul 2023, 00:00:03.760')
+        self.assertEqual(server.operator_rows(run)[0]['Movement end (recording time)'], '05 Jul 2023, 00:00:03')
 
     def test_history_survives_restart_and_more_than_forty_checks(self):
         with tempfile.TemporaryDirectory() as folder, patch.object(server,'HISTORY_PATH',None):

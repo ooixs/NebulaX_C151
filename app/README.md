@@ -46,14 +46,27 @@ The upload page disables unavailable checks when a model file or its manifest is
 
 1. Select Doors, Air conditioning, Rail condition or Structural health. Expand the column guide when checking the data layout.
 2. Drag original data files into the upload area. Doors accepts one continuous stream; the other systems accept up to 100 files, each no larger than 120 MB. Files are uploaded and checked one at a time, with progress shown for each recording.
-3. Select **Check file** or **Check files**. Review the summary, suggested inspection and searchable results table. Switching systems retains completed results and selected files.
-4. Download CSV or JSON with descriptive result headings. Door times use the recording’s clock in a readable date/time format.
+3. Select **Check file** or **Check files**. Results appear after the entire batch completes. Select a sequence, car or recording to review measurements and source readings. The selected system and page survive refresh; switching systems retains completed results and selected files.
+4. Download CSV or JSON with descriptive result headings. Door times use the recording’s clock and are displayed to whole seconds; original precision is retained internally. JSON includes measurement evidence.
 5. **Previous results** provides filters by check type and elapsed time, with a separate detail view and back button. Results are saved in `app/.local/results.sqlite3` and survive browser refreshes and server restarts. This local history is excluded from Git and submission packages.
-6. **Download all check results** produces an operator-friendly ZIP. An optional judging download produces the required `predictions.zip` with the original column names and timestamp format. Both combine checks by subsystem, using the newest prediction for repeated filenames and the newest Door stream. Contributing checks must use the same model version.
+6. **Download all check results** opens one checkbox per task. Each selected task includes the latest result for every filename (and the latest Door recording). A task with multiple source files gets its own folder of individual result CSVs; a single recording gets one CSV at the ZIP root. The separate `/api/export` contract still supports automated judging exports, but is not shown in the technician interface. Contributing checks must use the same model version.
 
-If a queued file fails, completed files remain in Previous results and only unfinished files remain selected. Input uploads are deleted after inference; history retains results and file metadata. By default, the server binds to 127.0.0.1 for one local operator. The separate Cloud Run mode uses `HOST` and `PORT`; its instance-local history is lost when the container is replaced. See the Cloud Run guide for hosted-mode limits.
+If a queued file fails, completed files remain in Previous results and only unfinished files remain selected. Input uploads are deleted after inference; history retains results, file metadata, derived metrics and selected original measurement points. By default, the server binds to 127.0.0.1 for one local operator. The separate Cloud Run mode uses `HOST` and `PORT`; its instance-local history is lost when the container is replaced. See the Cloud Run guide for hosted-mode limits.
 
 Rail checks target **corrugation**, a repeated pattern of uneven wear, rather than all rail defects. Structural health estimates damage during equal-length recordings from healthy operation: comparisons need the same measurement point, line and AW0/AW4 load condition. Random filenames do not identify the recording order.
+
+## Measurement evidence
+
+`diagnostics.py` extracts evidence after inference without changing any model or prediction:
+
+- Doors: individual movement sequences; current, voltage, back-EMF, duration, stationary samples and deviation from the trained normal-current profile. No physical door/car identity is inferred. Opening and closing sequences are compared separately.
+- Air conditioning: cars in numeric order, first inspection priority in red and lower priorities in green; a separate ordered list. Details compare valid cooling temperatures, peer differences, learned response residuals, setpoint error and available pressures. This model ranks cars; it does not classify the remaining cars as confirmed healthy.
+- Rail: sortable Normal / Side I / Side II columns and recording details with speed, side-level vibration/shock RMS, wavelengths, all 64 sensor-position summaries, and a representative trace from each side’s highest-RMS channel.
+- Structural health: filename-labelled damage bars, stress statistics, counted cycles and original stress readings.
+
+Metric bands are the uploaded comparison group's mean ±2 population standard deviations, including the selected item, with at least three valid items. Trace flags use that trace's mean ±3 population standard deviations. The deviation column shows 100 × (value − mean) / SD. It fades from dark green at the mean to white at 1 SD, stays neutral through 2 SD, and fades to dark red at 3 SD. Zero-variance data shows 0% at the mean; insufficient data shows a dash. These are descriptive statistical bands, not engineering limits or causal explanations of model decisions. Missing values remain unavailable. Rail/SHM batch comparison does not correct for speed, asset, line or load differences.
+
+Traces retain up to 180 evenly spaced original readings plus extreme values; sample indices refer to the selected sequence, car time series or full recording, as labelled. The 24 largest outliers are also tabulated. ACV invalid readings excluded by its loader remain unavailable. Older saved results can be opened but must be rechecked for measurement evidence.
 
 ## Judging alignment
 
@@ -72,6 +85,8 @@ A high placing cannot be guaranteed: held-out model performance and judges' asse
 ```sh
 python3 -m unittest discover -s app/tests -v
 node --check app/static/app.js
+node --check app/static/technician.js
+node --test app/tests/test_frontend.cjs
 ```
 
 The tests cover schema checks, upload boundaries, the shared prediction interface for all four subsystems (with injected test predictors), checksum validation, model changes during inference, exact CSV export, multi-batch merging, duplicate handling and preview exclusion. These are app contract tests. Run `python -m pytest tests -q` for real-model inference and packaged prediction parity checks; these also require the scientific dependencies and source datasets.
