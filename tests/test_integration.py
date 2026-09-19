@@ -150,7 +150,7 @@ def test_research_publish_activates_new_artifact(tmp_path):
 
 
 def test_packaging_refuses_to_replace_existing_directory(tmp_path):
-    from package import assemble
+    from scripts.package import assemble
 
     dest = tmp_path / "existing"
     dest.mkdir()
@@ -172,7 +172,7 @@ def shared_inputs(tmp_path_factory):
     if any(not p.exists() for files in paths.values() for p in files):
         pytest.skip("integration data not present")
     from common.artifacts import MANIFEST, resolve_model
-    from package import MODEL_FILES
+    from scripts.package import MODEL_FILES
     for subsystem, candidates in MODEL_FILES.items():
         directory = ROOT / subsystem / "model"
         try:
@@ -241,7 +241,7 @@ def test_full_batch_matches_submission_exports(shared_inputs, tmp_path):
 
 
 def test_packaged_predictors_and_zip_match_exports(shared_inputs, tmp_path):
-    from package import assemble
+    from scripts.package import assemble
 
     dest = tmp_path / "C151"
     assemble(dest)

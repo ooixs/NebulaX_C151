@@ -253,7 +253,7 @@ release decisions remain subject to the team's procedures and engineering judgem
 - Python tests: `app/tests/test_server.py`, `app/tests/test_diagnostics.py`
 - Browser-logic tests: `app/tests/test_frontend.cjs`
 - Shared inference and artifact selection: `common/inference.py`, `common/artifacts.py`
-- Submission packaging: `package.py`
+- Submission packaging: `scripts/package.py`
 
 ```sh
 .venv/bin/python -m unittest discover -s app/tests -v

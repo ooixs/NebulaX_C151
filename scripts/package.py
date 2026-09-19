@@ -1,6 +1,6 @@
 """Assemble the C151/ submission folder from this repo, exactly per the PS3 spec.
 
-Usage: python package.py [--dest C151]
+Usage: python scripts/package.py [--dest C151]
 
 Produces:
     C151/
@@ -23,12 +23,14 @@ import argparse
 import importlib.metadata
 import re
 import shutil
+import sys
 import zipfile
 from pathlib import Path
 
-from common.artifacts import MANIFEST, activate_model, resolve_model
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
-ROOT = Path(__file__).resolve().parent
+from common.artifacts import MANIFEST, activate_model, resolve_model
 SUBSYSTEMS = ["Door", "ACV", "Rail Corrugation", "SHM"]
 PREDICTIONS = ["door_predictions.csv", "acv_predictions.csv", "rail_predictions.csv", "shm_predictions.csv"]
 WRITEUPS = [
@@ -102,7 +104,7 @@ def assemble(dest: Path, root: Path = ROOT):
     copytree(root / "common", opt / "common")
     copytree(root / "rail_corrugation", opt / "rail_corrugation")
     for writeup in WRITEUPS:
-        source = root / writeup
+        source = root / "docs" / "writeups" / writeup
         if source.exists():
             shutil.copy2(source, opt / writeup)
         else:

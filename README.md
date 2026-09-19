@@ -53,16 +53,16 @@ instructions.
 
 ## Technical write-ups
 
-- [Air-conditioning refrigerant-leak ranking](writeup_ACV.md)
-- [Door-cycle segmentation and resistance classification](writeup_Door.md)
-- [Rail Corrugation classification](writeup_Rail_Corrugation.md)
-- [Structural Health Monitoring fatigue estimation](writeup_SHM.md)
-- [Operator app and maintenance workflow](writeup_App.md)
+- [Air-conditioning refrigerant-leak ranking](docs/writeups/writeup_ACV.md)
+- [Door-cycle segmentation and resistance classification](docs/writeups/writeup_Door.md)
+- [Rail Corrugation classification](docs/writeups/writeup_Rail_Corrugation.md)
+- [Structural Health Monitoring fatigue estimation](docs/writeups/writeup_SHM.md)
+- [Operator app and maintenance workflow](docs/writeups/writeup_App.md)
 
 ### Rail research updates
 
-- [Submission feedback and decision-layer experiment](docs/rail_decision_experiment.md)
-- [Feature, MiniROCKET, and ensemble experiments](docs/rail_model_experiments.md)
+- [Submission feedback and decision-layer experiment](docs/research/rail_decision_experiment.md)
+- [Feature, MiniROCKET, and ensemble experiments](docs/research/rail_model_experiments.md)
 
 The reported first-submission scores were Door 1.0000, ACV 1.0000, Rail 0.7448, and
 SHM 0.9725, giving an overall score of 0.9293. These organiser-reported results are
@@ -114,13 +114,16 @@ confirmed diagnoses or remaining-life forecasts.
 ├── SHM/                          # Fatigue-damage model and code
 ├── app/                          # Local operator web app
 ├── common/                       # Shared inference, metrics and artifact handling
-├── docs/references/              # Organisers' subsystem information kits
+├── docs/                         # Documentation and submission write-ups
+│   ├── writeups/                 # App and model technical write-ups
+│   ├── research/                 # Rail experiments and model audit
+│   └── references/               # Organisers' subsystem information kits
 ├── predictions/                  # Current prediction CSVs
 ├── tests/                        # Metric, inference and packaging tests
 ├── Dockerfile                    # Cloud Run container image
 ├── .gcloudignore                 # Minimal allowlist sent to Cloud Build
-├── package.py                    # Builds the C151 submission directory
-└── writeup_*.md                  # Detailed technical write-ups
+├── scripts/package.py            # Builds the C151 submission directory
+└── requirements.txt              # Inference dependencies
 ```
 
 The selected model in each subsystem is named by `model/active_model.json`. The manifest records
@@ -171,11 +174,11 @@ technical write-ups.
 ## Packaging
 
 ```sh
-python package.py --dest C151-new
+python scripts/package.py --dest C151-new
 ```
 
 The destination must not already exist. The command creates the self-contained app,
-`predictions.zip`, and `Optional_Items/` with the five write-ups and the selected model/code for
+`predictions.zip`, and `Optional_Items/` with the write-up index, five write-ups and the selected model/code for
 each subsystem. Add the required demo video to the resulting directory separately.
 
 ## AI disclosure

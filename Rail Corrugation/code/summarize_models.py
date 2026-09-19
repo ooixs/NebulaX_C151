@@ -70,7 +70,7 @@ def main():
         '- Cross-car features measure spectral consistency. No shared-defect timing assumption or test-batch adaptation was used.',
         '- An ensemble is accepted only if it also beats its strongest component in both screening and confirmation.',
         '- Keep the final upload available to restore the best observed archive. These local results do not guarantee leaderboard improvements.',
-        '', 'See `docs/rail_model_experiments.md` for the protocol, feature definitions, acceptance gates and reproduction commands.', '']
+        '', 'See `docs/research/rail_model_experiments.md` for the protocol, feature definitions, acceptance gates and reproduction commands.', '']
     (run/'REPORT.md').write_text('\n'.join(lines),encoding='utf-8')
     import importlib.metadata
     metadata = dict(python=sys.version, versions={n:importlib.metadata.version(n) for n in ['numpy','pandas','scipy','scikit-learn','sktime','numba','joblib','lightgbm']},

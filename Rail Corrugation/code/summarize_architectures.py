@@ -94,7 +94,7 @@ def main(run=RUN):
                                              'score_context', 'input_signature', 'record_sha256'] if key in record}
     grouping_path = RUN / 'final_calibration_grouping_check.json'
     grouping_check = read(grouping_path) if grouping_path.exists() else None
-    branch_audit = ROOT / 'docs/rail_branch_audit_20260919.md'
+    branch_audit = ROOT / 'docs/research/rail_branch_audit_20260919.md'
     speed_support = []
     if (RUN / 'speed_protocol.json').exists():
         for fold in read(RUN / 'speed_protocol.json'):
