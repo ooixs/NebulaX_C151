@@ -43,8 +43,13 @@
 !Rail Corrugation/code/
 !Rail Corrugation/code/__init__.py
 !Rail Corrugation/code/decision.py
+!Rail Corrugation/code/paired_models.py
 !Rail Corrugation/code/pipeline.py
 !Rail Corrugation/code/predict.py
+!Rail Corrugation/code/predict_candidate.py
+!Rail Corrugation/code/representations.py
+!Rail Corrugation/code/sg_features.py
+!Rail Corrugation/code/spectral_variants.py
 !Rail Corrugation/model/
 !Rail Corrugation/model/active_model.json
 !Rail Corrugation/model/rail_model.joblib

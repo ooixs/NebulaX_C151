@@ -128,6 +128,24 @@ class ContractTests(unittest.TestCase):
             manifest.write_text('[]')
             self.assertFalse(server.model_status('door')['ready'])
 
+    def test_cloud_build_includes_candidate_rail_runtime(self):
+        root = Path(__file__).resolve().parents[2]
+        upload_rules = set((root / '.gcloudignore').read_text(encoding='utf-8').splitlines())
+        required = {
+            '!rail_corrugation/__init__.py',
+            '!Rail Corrugation/code/decision.py',
+            '!Rail Corrugation/code/paired_models.py',
+            '!Rail Corrugation/code/pipeline.py',
+            '!Rail Corrugation/code/predict.py',
+            '!Rail Corrugation/code/predict_candidate.py',
+            '!Rail Corrugation/code/representations.py',
+            '!Rail Corrugation/code/sg_features.py',
+            '!Rail Corrugation/code/spectral_variants.py',
+        }
+        self.assertEqual(required - upload_rules, set())
+        self.assertIn('COPY ["Rail Corrugation/code", "./Rail Corrugation/code"]',
+                      (root / 'Dockerfile').read_text(encoding='utf-8'))
+
     def test_model_details_follow_verified_checkpoint(self):
         with tempfile.TemporaryDirectory() as temp, patch.object(server, 'ROOT', Path(temp)):
             directory = Path(temp) / 'Rail Corrugation/model'
