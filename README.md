@@ -178,6 +178,10 @@ The destination must not already exist. The command creates the self-contained a
 `predictions.zip`, and `Optional_Items/` with the five write-ups and the selected model/code for
 each subsystem. Add the required demo video to the resulting directory separately.
 
+## AI disclosure
+
+AI tools assisted with code development, debugging, interface design, and documentation.
+
 ## Important limitations
 
 - Private held-out labels are unavailable. Reported submission scores come from organiser
