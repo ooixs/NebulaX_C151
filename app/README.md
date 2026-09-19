@@ -10,7 +10,7 @@ From the repository root, using Python **3.11 or newer**:
 python3 app/server.py
 ```
 
-Open http://127.0.0.1:8765. On Windows use `python app/server.py`. Choose another port with `--port 8766` if needed. No Node build step, CDN, web framework or internet connection is needed. The interface and saved-result previews run with Python's standard library alone.
+Open http://127.0.0.1:8765. On Windows use `python app/server.py`. Choose another port with `--port 8766` if needed. No Node build step, CDN, web framework or internet connection is needed. The interface and saved-result history run with Python's standard library alone.
 
 For live inference, install the repository's inference dependencies into your environment first:
 
@@ -34,19 +34,20 @@ The four supplied model binaries and their `active_model.json` manifests are inc
 | `Rail Corrugation/model/` | `rail_model.joblib` | `2026-09-18-autoresearch` |
 | `SHM/model/` | `shm_model.joblib` | `2026-09-18-sg-branch3` |
 
-Model setup reports a missing file, invalid manifest or checksum mismatch. Restore only trusted trained artifacts; serialized Python models execute code when loaded. If restoring an original trusted artifact without its manifest, use the existing `python -m common.artifacts --activate <artifact-path> --run-id <run-id>` command. The app deliberately requires explicit selection for every model, including SHM's alternate JSON format. Select Check setup again after restoration.
+The upload page disables unavailable checks when a model file or its manifest is missing or invalid. Restore only trusted trained artifacts; serialized Python models execute code when loaded. If restoring an original trusted artifact without its manifest, use the existing `python -m common.artifacts --activate <artifact-path> --run-id <run-id>` command. The app deliberately requires explicit selection for every model, including SHM's alternate JSON format. Refresh the page after restoration.
 
 ## Operator workflow
 
-1. Select Doors, Air conditioning, Rail condition or Structural health.
-2. Drag original data files into the upload area. Door accepts one continuous stream; the others accept up to 100 files and 120 MB per batch. Split large test sets across batches.
-3. Select Check these files. Review the visual summary, What to check next, and the searchable results table. Select Download results (CSV) to save your results.
-4. Select Technical record (JSON) if you need input hashes, model version, timing and output evidence.
-5. Select Download submission, then Download ZIP file to save `predictions.zip`. Live batches are combined by subsystem. Repeated filenames use their newest prediction; Door uses only the newest stream. Contributing batches must use the same model hash. The ZIP has only the official prediction CSVs at its top level.
+1. Select Doors, Air conditioning, Rail condition or Structural health. Expand the column guide when checking the data layout.
+2. Drag original data files into the upload area. Doors accepts one continuous stream; the other systems accept up to 100 files, each no larger than 120 MB. Files are uploaded and checked one at a time, with progress shown for each recording.
+3. Select **Check file** or **Check files**. Review the summary, suggested inspection and searchable results table. Switching systems retains completed results and selected files.
+4. Download CSV or JSON with descriptive result headings. Door times use the recording’s clock in a readable date/time format.
+5. **Previous results** provides filters by check type and elapsed time, with a separate detail view and back button. Results are saved in `app/.local/results.sqlite3` and survive browser refreshes and server restarts. This local history is excluded from Git and submission packages.
+6. **Download all check results** produces an operator-friendly ZIP. An optional judging download produces the required `predictions.zip` with the original column names and timestamp format. Both combine checks by subsystem, using the newest prediction for repeated filenames and the newest Door stream. Contributing checks must use the same model version.
 
-The most recent 40 runs are kept in server memory and restored after browser refresh. They disappear when the server stops. Input uploads are placed in an isolated temporary directory and deleted after inference. Download records and exports before stopping. The server binds only to 127.0.0.1 and is intended for one operator, not shared or public hosting.
+If a queued file fails, completed files remain in Previous results and only unfinished files remain selected. Input uploads are deleted after inference; history retains results and file metadata. The server binds only to 127.0.0.1 and is intended for one operator, not shared or public hosting.
 
-“View example results” reads the repository's existing `predictions/` CSVs. It does **not** run a model or verify the historic model/input provenance. These results are visibly labelled and cannot be included in a submission archive. A packaged app without these CSVs still supports live inference.
+Rail checks target **corrugation**, a repeated pattern of uneven wear, rather than all rail defects. Structural health estimates damage during equal-length recordings from healthy operation: comparisons need the same measurement point, line and AW0/AW4 load condition. Random filenames do not identify the recording order.
 
 ## Judging alignment
 
@@ -54,22 +55,11 @@ Based on [PS3 specifications](https://github.com/aochinwen/NebulaX-Hackathon-Pro
 
 - **Ease of use:** one selection/upload/analyze flow, drag and drop, format guidance, actionable errors, responsive layout and direct downloads.
 - **Clarity:** Door cycle sequence and exact intervals; ACV ordered car cards; rail class distribution and side localisation; SHM comparative damage bars. Tables expose individual predictions, and full-precision export is independent of UI filters.
-- **Usefulness:** inspection suggestions tied to model outputs, explicit model limits, batch handling, session history and integrity-checked provenance.
-- **Problem fit:** all four subsystems, clear maintenance questions, model methods and research scores in Model setup. No unsupported confidence probabilities, asset positions, remaining-life forecasts or held-out scores.
-- **Technical execution:** the existing shared model interface produces the official output schema. Live CSV downloads retain the predictor's CSV representation; combined exports preserve numeric strings without rounding. Preview results never enter a submission.
+- **Usefulness:** inspection suggestions tied to model outputs, explicit model limits, batch handling, persistent history and integrity-checked provenance.
+- **Problem fit:** all four subsystems, clear maintenance questions and concise input guidance. No unsupported confidence probabilities, asset positions, remaining-life forecasts or held-out scores.
+- **Technical execution:** the existing shared model interface produces the official output schema. Operator exports use descriptive headings; judging exports retain the official schema. Both preserve numeric precision.
 
 A high placing cannot be guaranteed: held-out model performance and judges' assessments remain independent of the interface.
-
-## Three-minute demo
-
-Use the included models and actual held-out inputs, not saved-result previews.
-
-- **0:00–0:25:** explain the maintenance question and four-subsystem coverage.
-- **0:25–1:15:** select a subsystem, upload data and run inference.
-- **1:15–2:15:** inspect a flagged result and suggested check; show the other subsystem views using live analyses prepared earlier in the same session.
-- **2:15–3:00:** show model provenance, download a CSV and export the combined archive.
-
-Record a real screen video no longer than three minutes and add it to the final team submission folder. This implementation does not manufacture a demo recording or claim previews as real inference.
 
 ## Validation and packaging
 

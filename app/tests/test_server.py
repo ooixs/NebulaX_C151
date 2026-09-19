@@ -185,6 +185,55 @@ class ContractTests(unittest.TestCase):
                 self.assertEqual(calls, [(server.SYSTEMS[key]['name'], key=='door')])
                 self.assertEqual(run['csv'], Frame(rows).to_csv().encode())
 
+    def test_operator_downloads_keep_submission_schema_separate(self):
+        run = server.save_run('shm', [{'file_id':'x.csv','prediction':0.123}], [], {'sha256':'one'}, 0,
+                              csv_content=b'file_id,prediction\nx.csv,0.12345678901234567\n')
+        friendly = server.operator_csv(run).decode()
+        self.assertEqual(friendly, 'Source file,Estimated fatigue damage\nx.csv,0.12345678901234567\n')
+        with zipfile.ZipFile(io.BytesIO(server.export_zip([run['id']]))) as zipped:
+            self.assertEqual(zipped.read('shm_predictions.csv'), run['csv'])
+
+    def test_door_export_uses_recording_clock_and_milliseconds(self):
+        self.assertEqual(server.readable_time('2023-7-5-0-11-17-664'), '05 Jul 2023, 00:11:17.664')
+        run = dict(system='door', rows=[{'start_time':'2023-7-5-0-0-0-0','end_time':'2023-7-5-0-0-3-760','prediction':'Normal'}])
+        self.assertEqual(server.operator_rows(run)[0]['Movement end (recording time)'], '05 Jul 2023, 00:00:03.760')
+
+    def test_history_survives_restart_and_more_than_forty_checks(self):
+        with tempfile.TemporaryDirectory() as folder, patch.object(server,'HISTORY_PATH',None):
+            path = Path(folder) / 'results.sqlite3'
+            server.configure_history(path)
+            for i in range(70):
+                server.save_run('rail', [{'file_id':f'{i}.csv','prediction':'Normal'}], [], {'sha256':'one'}, 0,
+                                csv_content=f'file_id,prediction\n{i}.csv,Normal\n'.encode())
+            ids = list(server.RUNS)
+            server.RUNS.clear()
+            server.configure_history(path)
+            self.assertEqual(list(server.RUNS), ids)
+            with zipfile.ZipFile(io.BytesIO(server.export_zip(ids))) as zipped:
+                self.assertEqual(len(list(csv.DictReader(io.StringIO(zipped.read('rail_predictions.csv').decode())))),70)
+
+    def test_queued_files_merge_without_losing_precision(self):
+        runs=[]
+        for name in ['a.csv','b.csv']:
+            runs.append(server.save_run('shm',[{'file_id':name,'prediction':0.12}],[],{'sha256':'one'},0,
+                                        csv_content=f'file_id,prediction\n{name},0.12345678901234567\n'.encode()))
+        merged=server.merge_runs([r['id'] for r in runs])
+        self.assertEqual(len(merged['rows']),2)
+        self.assertEqual(merged['combined_from'],[r['id'] for r in runs])
+        self.assertIn(b'0.12345678901234567',merged['csv'])
+        runs[0]['model']['sha256']='changed'
+        with self.assertRaisesRegex(ValueError,'different models'):
+            server.merge_runs([r['id'] for r in runs])
+
+    def test_all_results_endpoint_uses_operator_headers(self):
+        run=server.save_run('rail',[{'file_id':'a.csv','prediction':'Side I'}],[],{'sha256':'one'},0,
+                            csv_content=b'file_id,prediction\na.csv,Side I\n')
+        status, content=self.request('/api/all-results',json.dumps({'ids':[run['id']]}).encode())
+        self.assertEqual(status,200)
+        with zipfile.ZipFile(io.BytesIO(content)) as zipped:
+            self.assertEqual(zipped.namelist(),['rail_check_results.csv'])
+            self.assertIn(b'Rail corrugation result',zipped.read('rail_check_results.csv'))
+
     def test_preview_files_have_valid_schema(self):
         for key, config in server.SYSTEMS.items():
             with (server.ROOT / 'predictions' / config['output']).open() as file:

@@ -10,6 +10,7 @@ import logging
 import math
 import re
 import sys
+import sqlite3
 import tempfile
 import threading
 import time
@@ -32,6 +33,7 @@ SYSTEMS = {
     "rail": dict(name="Rail Corrugation", extension=".csv", artifact="rail_model.joblib", output="rail_predictions.csv", columns=["file_id", "prediction"]),
     "shm": dict(name="SHM", extension=".csv", artifact="shm_model.joblib", output="shm_predictions.csv", columns=["file_id", "prediction"]),
 }
+HISTORY_PATH = None
 RUNS = {}
 RUN_LOCK = threading.Lock()
 INFERENCE_LOCK = threading.Lock()
@@ -136,9 +138,87 @@ def save_run(key, rows, files, model, elapsed, preview=False, csv_content=None):
         run["csv"] = csv_content
     with RUN_LOCK:
         RUNS[run["id"]] = run
-        while len(RUNS) > 40:
-            del RUNS[next(iter(RUNS))]
+        persist_run(run)
     return run
+
+
+def configure_history(path):
+    """Save result metadata and outputs, never original uploaded sensor files."""
+    global HISTORY_PATH
+    HISTORY_PATH = Path(path)
+    HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(HISTORY_PATH) as db:
+        db.execute("CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, record TEXT, output BLOB)")
+        for record, output in db.execute("SELECT record, output FROM runs ORDER BY rowid"):
+            run = json.loads(record)
+            if output is not None:
+                run['csv'] = output
+            RUNS[run['id']] = run
+
+
+def persist_run(run):
+    if HISTORY_PATH is not None:
+        with sqlite3.connect(HISTORY_PATH) as db:
+            db.execute("INSERT OR REPLACE INTO runs VALUES (?, ?, ?)",
+                       (run['id'], json.dumps(public_run(run), allow_nan=False), run.get('csv')))
+
+
+def readable_time(value):
+    parts = str(value).split('-')
+    if len(parts) == 7 and all(part.isdigit() for part in parts):
+        y, mo, d, h, mi, sec, ms = map(int, parts)
+        stamp = datetime(y, mo, d, h, mi, sec, ms * 1000)
+    else:
+        stamp = datetime.fromisoformat(str(value))
+    return stamp.strftime('%d %b %Y, %H:%M:%S.') + f'{stamp.microsecond // 1000:03d}' + (stamp.strftime(' %z') if stamp.tzinfo else '')
+
+
+OPERATOR_COLUMNS = {
+    'door': {'start_time': 'Movement start (recording time)', 'end_time': 'Movement end (recording time)', 'prediction': 'Door condition'},
+    'acv': {'file_id': 'Source file', 'ranked_cars': 'Cars in refrigerant leak inspection order'},
+    'rail': {'file_id': 'Source file', 'prediction': 'Rail corrugation result'},
+    'shm': {'file_id': 'Source file', 'prediction': 'Estimated fatigue damage'},
+}
+
+
+def operator_rows(run):
+    # Read original CSV strings to avoid rounding exported fatigue damage values.
+    source = list(csv.DictReader(io.StringIO(run['csv'].decode()))) if run.get('csv') else run['rows']
+    return [{label: readable_time(row[key]) if key in ('start_time', 'end_time') else row[key]
+             for key, label in OPERATOR_COLUMNS[run['system']].items()} for row in source]
+
+
+def operator_csv(run):
+    output = io.StringIO(newline='')
+    writer = csv.DictWriter(output, fieldnames=list(OPERATOR_COLUMNS[run['system']].values()), lineterminator='\n')
+    writer.writeheader()
+    writer.writerows(operator_rows(run))
+    return output.getvalue().encode()
+
+
+def merge_runs(ids):
+    if not isinstance(ids, list) or not ids or len(ids) > 100 or any(not isinstance(i, str) for i in ids):
+        raise ValueError('Choose completed checks to combine.')
+    with RUN_LOCK:
+        runs = [RUNS.get(i) for i in ids]
+    if len(ids) != len(set(ids)) or any(r is None or r['preview'] for r in runs):
+        raise ValueError('One of these checks is unavailable. Previously completed results are still in Previous results.')
+    key = runs[0]['system']
+    if key == 'door' or any(r['system'] != key for r in runs):
+        raise ValueError('Only files from the same non-Door check can be combined.')
+    names = [row['file_id'] for r in runs for row in r['rows']]
+    if len(names) != len(set(names)):
+        raise ValueError('The selected checks contain duplicate filenames.')
+    if len({r['model']['sha256'] for r in runs}) != 1:
+        raise ValueError('The checks use different models. Check the files again with one model version.')
+    exact = [row for r in runs for row in csv.DictReader(io.StringIO(r['csv'].decode()))]
+    merged = save_run(key, [row for r in runs for row in r['rows']], [f for r in runs for f in r['files']],
+                     runs[0]['model'], sum(r['elapsed'] for r in runs), csv_content=csv_bytes(key, exact))
+    merged["combined_from"] = ids
+    with RUN_LOCK:
+        persist_run(merged)
+    # Retain individual checks too: another browser may already be viewing one.
+    return merged
 
 
 def analyze(key, files):
@@ -171,7 +251,7 @@ def public_run(run):
 
 
 def export_zip(ids):
-    if not isinstance(ids, list) or not ids or len(ids) > 40 or any(not isinstance(i, str) for i in ids):
+    if not isinstance(ids, list) or not ids or len(ids) > 10000 or any(not isinstance(i, str) for i in ids):
         raise ValueError("Check your uploaded files before downloading a submission.")
     if len(set(ids)) != len(ids):
         raise ValueError("Select each completed check only once.")
@@ -224,6 +304,9 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def send_error(self, code, message=None, explain=None):
+        self.send(code, dict(error=message or 'The request could not be completed. Refresh the app and try again.'))
+
     def do_GET(self):
         path = urlparse(self.path)
         try:
@@ -253,9 +336,11 @@ class Handler(BaseHTTPRequestHandler):
                 if run is None:
                     return self.send(404, dict(error="These results are no longer available. Add the original files and check them again."))
                 if parts[3] == "report":
-                    return self.send(200, public_run(run), filename=f"{run['system']}_analysis_record.json")
-                filename = ("preview_" if run["preview"] else "") + SYSTEMS[run["system"]]["output"]
-                return self.send(200, run.get("csv") or csv_bytes(run["system"], run["rows"]), "text/csv; charset=utf-8", filename)
+                    report = dict(system=run['system'], checked_at=run['created'], source_files=run['files'],
+                                  results=operator_rows(run), model_version=(run.get('model') or {}).get('run_id'))
+                    return self.send(200, report, filename=f"{run['system']}_check_results.json")
+                filename = ("example_" if run["preview"] else "") + run['system'] + '_check_results.csv'
+                return self.send(200, operator_csv(run), "text/csv; charset=utf-8", filename)
             static = {"/": "index.html", "/app.js": "app.js", "/style.css": "style.css"}
             if path.path not in static:
                 return self.send(404, dict(error="Not found"))
@@ -274,6 +359,17 @@ class Handler(BaseHTTPRequestHandler):
             if size <= 0 or size > MAX_UPLOAD + 1024 * 1024:
                 return self.send(413, dict(error="Add files containing sensor readings. Their combined size must be no more than 120 MB."))
             body = self.rfile.read(size)
+            if self.path == "/api/merge":
+                return self.send(200, public_run(merge_runs(json.loads(body).get('ids'))))
+            if self.path == "/api/all-results":
+                ids = json.loads(body).get('ids')
+                official = export_zip(ids)
+                output = io.BytesIO()
+                with zipfile.ZipFile(io.BytesIO(official)) as source, zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as target:
+                    for key, config in SYSTEMS.items():
+                        if config['output'] in source.namelist():
+                            target.writestr(key + '_check_results.csv', operator_csv(dict(system=key, csv=source.read(config['output']))))
+                return self.send(200, output.getvalue(), 'application/zip', 'all_check_results.zip')
             if self.path == "/api/export":
                 request = json.loads(body)
                 return self.send(200, export_zip(request.get("ids")), "application/zip", "predictions.zip")
@@ -304,6 +400,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
+    configure_history(APP / '.local' / 'results.sqlite3')
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     print(f"NebulaX Control Room → http://127.0.0.1:{args.port}", flush=True)
     try:
