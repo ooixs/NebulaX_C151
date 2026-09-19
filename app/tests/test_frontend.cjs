@@ -36,7 +36,9 @@ test('deviation is percentage of one SD, with neutral and missing cases',()=>{
  assert.equal(h.run('deviation({value:7,mean:10,low:6,high:14,n:5})'),-150);
  assert.equal(h.run('deviation({value:10,mean:10,low:10,high:10,n:5})'),0);
  assert.equal(h.run('deviation({value:13,mean:10,low:null,high:null,n:2})'),null);
- assert.match(h.run('deviationCell({value:13,mean:10,low:6,high:14,n:5})'),/rgb\(255,255,255\)/);
+ assert.match(h.run('deviationCell({value:11.5,mean:10,low:6,high:14,n:5})'),/rgb\(255,255,255\)/);
+ assert.match(h.run('deviationCell({value:13,mean:10,low:6,high:14,n:5})'),/rgb\(206,152,152\)/);
+ assert.match(h.run('deviationCell({value:7,mean:10,low:6,high:14,n:5})'),/rgb\(206,152,152\)/);
  assert.match(h.run('deviationCell({value:16,mean:10,low:6,high:14,n:5})'),/rgb\(157,48,48\)/);
  assert.match(h.run('deviationCell({value:10,mean:10,low:6,high:14,n:5})'),/rgb\(35,98,70\)/);
 });

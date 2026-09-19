@@ -67,8 +67,8 @@ function deviationCell(m){
   if(pct===null||!Number.isFinite(pct))return '<span class="sd-value unavailable" title="Not enough variation or valid data">—</span>';
   const distance=Math.abs(pct)/100;
   let color=[255,255,255],ink='#536158';
-  if(distance<1){const t=distance;color=[35,98,70].map(v=>Math.round(v+(255-v)*t));ink=distance<.45?'#fff':'#244c38';}
-  if(distance>2){const t=Math.min(1,distance-2);color=[157,48,48].map(v=>Math.round(255+(v-255)*t));ink=t>.6?'#fff':'#792b2b';}
+  if(distance<.5){const t=distance/.5;color=[35,98,70].map(v=>Math.round(v+(255-v)*t));ink=distance<.225?'#fff':'#244c38';}
+  if(distance>1){const t=Math.min(1,distance-1);color=[157,48,48].map(v=>Math.round(255+(v-255)*t));ink=t>.6?'#fff':'#792b2b';}
   const rounded=Math.round(pct),label=(rounded>0?'+':'')+rounded.toLocaleString()+'%';
   return `<span class="sd-value" style="background:rgb(${color.join(',')});color:${ink}" title="${esc(num(pct/100))} SD from dataset mean">${label}</span>`;
 }
