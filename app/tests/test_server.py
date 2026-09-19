@@ -273,6 +273,36 @@ class ContractTests(unittest.TestCase):
             with zipfile.ZipFile(io.BytesIO(server.export_zip(ids))) as zipped:
                 self.assertEqual(len(list(csv.DictReader(io.StringIO(zipped.read('rail_predictions.csv').decode())))),70)
 
+    def test_missing_history_folder_recovers_all_completed_checks(self):
+        with tempfile.TemporaryDirectory() as temp, patch.object(server, 'HISTORY_PATH', None):
+            path = Path(temp) / 'history' / 'results.sqlite3'
+            server.configure_history(path)
+            first = server.save_run('shm', [{'file_id':'a.csv','prediction':0.12}], [], {'sha256':'same'}, 0,
+                                    csv_content=b'file_id,prediction\na.csv,0.12345678901234567\n')
+            path.unlink()
+            path.parent.rmdir()
+            second = server.save_run('rail', [{'file_id':'b.csv','prediction':'Normal'}], [], {'sha256':'same'}, 0,
+                                     csv_content=b'file_id,prediction\nb.csv,Normal\n')
+            server.RUNS.clear()
+            server.configure_history(path)
+            self.assertEqual(list(server.RUNS), [first['id'], second['id']])
+            self.assertEqual(server.RUNS[first['id']]['csv'], first['csv'])
+
+    def test_storage_failure_does_not_create_successful_history_entry(self):
+        import sqlite3
+        with patch.object(server, 'HISTORY_PATH', Path('/unavailable/results.sqlite3')), \
+             patch.object(Path, 'mkdir'), patch.object(server.sqlite3, 'connect', side_effect=sqlite3.OperationalError('read only')):
+            with self.assertRaisesRegex(server.HistoryStorageError, 'could not save'):
+                server.save_run('rail', [], [], {}, 0)
+        self.assertFalse(server.RUNS)
+
+    def test_storage_error_response_identifies_storage_not_input_format(self):
+        with patch.object(server, 'merge_runs', side_effect=server.HistoryStorageError('The app could not save the results.')), \
+             patch.object(server.logging, 'exception'):
+            status, body = self.request('/api/merge', b'{"ids":["example"]}')
+        self.assertEqual(status, 503)
+        self.assertIn('could not save', body['error'])
+
     def test_queued_files_merge_without_losing_precision(self):
         runs=[]
         for name in ['a.csv','b.csv']:

@@ -149,8 +149,8 @@ def save_run(key, rows, files, model, elapsed, preview=False, csv_content=None, 
     if csv_content is not None:
         run["csv"] = csv_content
     with RUN_LOCK:
-        RUNS[run["id"]] = run
         persist_run(run)
+        RUNS[run["id"]] = run
     return run
 
 
@@ -168,11 +168,28 @@ def configure_history(path):
             RUNS[run['id']] = run
 
 
+class HistoryStorageError(RuntimeError):
+    """Inference succeeded but durable result storage is unavailable."""
+
+
 def persist_run(run):
-    if HISTORY_PATH is not None:
+    if HISTORY_PATH is None:
+        return
+    try:
+        HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
         with closing(sqlite3.connect(HISTORY_PATH)) as db, db:
-            db.execute("INSERT OR REPLACE INTO runs VALUES (?, ?, ?)",
-                       (run['id'], json.dumps(public_run(run), allow_nan=False), run.get('csv')))
+            recovering = db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='runs'").fetchone() is None
+            db.execute("CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, record TEXT, output BLOB)")
+            # If the folder/database disappeared during operation, preserve all
+            # completed checks still held by this process, including exact CSVs.
+            records = [r for r in RUNS.values() if r['id'] != run['id']] if recovering else []
+            records.append(run)
+            db.executemany("INSERT OR REPLACE INTO runs VALUES (?, ?, ?)",
+                           [(r['id'], json.dumps(public_run(r), allow_nan=False), r.get('csv')) for r in records])
+    except (OSError, sqlite3.Error) as exc:
+        raise HistoryStorageError('The model completed its check, but the app could not save the results. '
+                                  'Check available disk space and write access to app/.local, then retry. '
+                                  'Your sensor file format is not the cause of this storage error.') from exc
 
 
 def readable_time(value):
@@ -454,6 +471,9 @@ class Handler(BaseHTTPRequestHandler):
                 elif name == "files":
                     files.append((part.get_filename(), part.get_payload(decode=True)))
             self.send(200, public_run(analyze(key, files)))
+        except HistoryStorageError as exc:
+            logging.exception("Result history could not be saved")
+            self.send(503, dict(error=str(exc)))
         except (ValueError, KeyError, TypeError, OSError) as exc:
             self.send(400, dict(error=str(exc)))
         except ImportError as exc:
